@@ -81,6 +81,8 @@ pub enum ErrorIssue {
     // Parse Issues
     //
     ExpectedExpression,
+    InvalidSyntax,
+    UnexpectedEoF,
 
     //
     // Internal Issues
@@ -103,6 +105,8 @@ impl std::fmt::Display for ErrorIssue {
                 // Parse Issues
                 //
                 Issue::ExpectedExpression => "Expected Expression",
+                Issue::InvalidSyntax => "Invalid Syntax",
+                Issue::UnexpectedEoF => "Unexpected EOF (end of file)",
 
                 //
                 // Internal Issues

@@ -93,7 +93,7 @@ struct Parser<'a> {
 impl<'a> Parser<'a> {
     /// Attempts to parse one expression.
     pub fn parse_expr(&mut self) -> Result<Handle<Expr>, Error> {
-        self.parse_binary()
+        self.parse_assign()
     }
 
     /// Returns whether or not only token remaining is the EOF.
@@ -124,6 +124,107 @@ impl<'a> Parser<'a> {
             return;
         }
         self.cursor += k;
+    }
+
+    /// Advances the parser until the `target` token kind is found. Will return the number of tokens it skipped,
+    /// as well as a boolean denoted whether or not the parser reached the EOF token during this maneuver.
+    fn eat_until(&mut self, target: Tk) -> (usize, bool) {
+        let mut i = 0;
+        
+        while self.get(0).kind != target {
+            if self.get(0).kind == Tk::Eof {
+                return (i, true);
+            }
+            
+            self.eat(1);
+            i += 1;
+        }
+
+        let eof_found = self.get(0).kind == Tk::Eof;
+        (i, eof_found)
+    }
+}
+
+impl<'a> Parser<'a> {
+    // Begins: cursor -> LPAR
+    // Ends: cursor -> RPAR
+    fn parse_call_args(&mut self) -> Vec<Handle<Expr>> {
+        // Span of the LPAR
+        let start_span = self.get(0).span;
+        
+        // Empty args case check
+        if self.get(1).kind == Tk::RPar {
+            self.eat(1);
+            return vec![];
+        }
+        
+        let mut args: Vec<Handle<Expr>> = vec![];
+
+        loop {
+            self.eat(1); // advance to the first token of this expression
+            match self.parse_expr() {
+                Ok(handle) => args.push(handle),
+                Err(error) => self.errors.push(error),
+            }
+
+            // After the call to `parse_expr()` we are pointing at the token
+            // AFTER the argument.
+
+            // Breaking inside this match block simply means returning the `args` vec.
+            // No hidden eats or anything like that.
+            match self.get(0).kind {
+                Tk::RPar => break,
+                Tk::Comma => {
+                    // Make sure the comma is followed by an argument.
+                    if self.get(1).kind == Tk::RPar {
+                        self.errors.push(Error::new(
+                            Issue::InvalidSyntax,
+                            self.get(0).span,
+                            "Expected another argument after the comma, got `)` instead.".into(),
+                        ));
+
+                        // Advance to the RPAR and then return.
+                        self.eat(1);
+                        break;
+
+                    // Otherwise, just continue. This is the ONLY case that is a valid continuation of the loop!
+                    } else {
+                        continue;
+                    }
+                },
+                Tk::Eof => {
+                    self.errors.push(Error::new(
+                        Issue::UnexpectedEoF,
+                        start_span,
+                        "This function call is missing a closing `)`.".into(),
+                    ));
+                    break;
+                },
+                _ => {
+                    self.errors.push(Error::new(
+                        Issue::InvalidSyntax,
+                        self.get(0).span,
+                        "Expected either `)` to end the function call or `,` to continue listing arguments.".into(),
+                    ));
+
+                    // Advance until the RPAR is found
+                    let (_, eof) = self.eat_until(Tk::RPar);
+
+                    // Handle the EOF case
+                    if eof {
+                        self.errors.push(Error::new(
+                            Issue::UnexpectedEoF,
+                            start_span,
+                            "This function call is missing a closing `)`.".into(),
+                        ));
+                    }
+
+                    break;
+                }
+            }
+        }
+
+        args
     }
 }
 
@@ -205,6 +306,31 @@ impl<'a> Parser<'a> {
         Ok(self.ast.push_expr(expr))
     }
 
+    fn parse_call(&mut self) -> Result<Handle<Expr>, Error> {
+        let (span, _) = (self.get(0).span, self.get(0).kind);
+        let expr: Expr;
+
+        // Start by parsing this expression
+        let callee = self.parse_atom()?; // @mark NEXT CALL
+
+        // Now look for the call
+        if self.get(0).kind == Tk::LPar {
+            let args = self.parse_call_args();
+
+            // After the call to `parse_call_args()`,
+            // cursor -> RPAR
+
+            let span = self.get(0).span.merge(&span);
+            expr = Expr::new(span, E::ExprCall { callee, args });
+        } else {
+            return Ok(callee);
+        }
+
+        // Advance PAST the RPAR
+        self.eat(1);
+        Ok(self.ast.push_expr(expr))
+    }
+
     /// Parses a prefix unary expression like `!x` or `-x`.
     fn parse_prefix_unary(&mut self) -> Result<Handle<Expr>, Error> {
         let (span, kind) = (self.get(0).span, self.get(0).kind);
@@ -215,7 +341,7 @@ impl<'a> Parser<'a> {
         match kind {
             Tk::Min => op = Op::Neg,
             Tk::Bang => op = Op::Not,
-            _ => return self.parse_atom(), // <-- @(mark) NEXT CALL
+            _ => return self.parse_call(), // @mark NEXT CALL
         }
 
         // Go to the next token
@@ -241,7 +367,7 @@ impl<'a> Parser<'a> {
         let op: Op;
 
         // Parse the current expression first
-        let operand = self.parse_prefix_unary()?; // <-- @(mark) NEXT CALL
+        let operand = self.parse_prefix_unary()?; // @mark NEXT CALL
 
         // Then look for a postfix unary operator
         match self.get(0).kind {
@@ -267,7 +393,7 @@ impl<'a> Parser<'a> {
         let op: Op;
 
         // Parse the current expression first
-        let lhs = self.parse_postfix_unary()?; // <-- @(mark) NEXT CALL
+        let lhs = self.parse_postfix_unary()?; // @mark NEXT CALL
 
         // Then look for a binary operator
         match self.get(0).kind {
@@ -292,6 +418,43 @@ impl<'a> Parser<'a> {
         expr = Expr::new(span, E::ExprBinary { lhs, rhs, op });
 
         // @(todo) implement postfixup algo here
+        self.eat(1);
+        Ok(self.ast.push_expr(expr))
+    }
+
+    fn parse_assign(&mut self) -> Result<Handle<Expr>, Error> {
+        let (span, _) = (self.get(0).span, self.get(0).kind);
+        let expr: Expr;
+        let op: Op;
+
+        // Parse the current expression first
+        let lhs = self.parse_binary()?; // @mark NEXT CALL
+
+        // Then look for a binary operator
+        match self.get(0).kind {
+            Tk::Plus => op = Op::AddAssign,
+            Tk::Min => op = Op::SubAssign,
+            Tk::Star => op = Op::MulAssign,
+            Tk::Slash => op = Op::DivAssign,
+            Tk::Mod => op = Op::ModAssign,
+            Tk::StarStarEq => op = Op::PowAssign,
+            Tk::SlashSlashEq => op = Op::FloorAssign,
+            Tk::Eq => op = Op::Assign,
+            _ => return Ok(lhs),
+        }
+
+        // Go to the next token
+        self.eat(1);
+
+        // Then parse an expression on this token
+        let rhs = self.parse_expr()?;
+
+        // Merge the spans
+        let span = span.merge(&self.ast.get_expr(rhs).span);
+
+        // Produce an expression
+        expr = Expr::new(span, E::ExprAssign { lhs, rhs, op });
+
         self.eat(1);
         Ok(self.ast.push_expr(expr))
     }

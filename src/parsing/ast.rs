@@ -105,6 +105,15 @@ impl Ast {
                 self.print_expr(i + 2, int, *lhs);
                 self.print_expr(i + 2, int, *rhs);
             }
+            E::ExprCall { callee, args } => {
+                eprintln!("CALL");
+                self.print_expr(i + 2, int, *callee);
+                eprintln!("{spaces}  ARGS (");
+                for arg in args {
+                    self.print_expr(i + 4, int, *arg);
+                }
+                eprintln!("{spaces}  )");
+            }
 
             _ => unreachable!("unknown expression data in pretty printer!"),
         }

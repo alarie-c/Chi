@@ -48,6 +48,11 @@ pub enum ExprData {
         rhs: Handle<Expr>,
         op: Op,
     },
+    ExprAssign {
+        lhs: Handle<Expr>,
+        rhs: Handle<Expr>,
+        op: Op,
+    }
 }
 
 // ------------------------------------------------------------------------------------------------------------------ //
