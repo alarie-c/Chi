@@ -7,6 +7,7 @@ use crate::{
     parsing::{
         ast::Ast,
         expr::{Expr, ExprData},
+        stmt::{Stmt, StmtData},
     },
     token::{Token, TokenKind},
 };
@@ -14,7 +15,16 @@ use crate::{
 // Aliases
 type Issue = ErrorIssue;
 type E = ExprData;
+type S = StmtData;
 type Tk = TokenKind;
+
+macro_rules! stringify_span {
+    ($self:expr, $span:expr) => {{
+        let bytes = &($self).source[($span).as_range()];
+        String::from_utf8(bytes.iter().map(|b| *b).collect())
+            .expect("invalid byte sequence for this token!")
+    }};
+}
 
 // ------------------------------------------------------------------------------------------------------------------ //
 // MARK: Parse API
@@ -43,10 +53,10 @@ pub fn parse<'a>(
     };
 
     while !parser.is_at_eof() {
-        match parser.parse_expr() {
+        match parser.parse_stmt() {
             Ok(handle) => {
                 parser.ast.push_to_root(handle);
-                let expr = parser.ast.get_expr(handle);
+                let expr = parser.ast.get_stmt(handle);
                 eprintln!("{:#?}", expr);
             }
             Err(err) => {
@@ -111,10 +121,22 @@ impl<'a> Parser<'a> {
 impl<'a> Parser<'a> {
     /// Returns the token `k` tokens ahead of `cursor`.
     fn get(&self, k: usize) -> &Token {
-        if self.cursor + k >= self.tokens.len() {
-            return self.tokens.last().unwrap();
+        let i = self.cursor + k;
+        if i >= self.tokens.len() {
+            self.tokens.last().unwrap()
+        } else {
+            &self.tokens[i]
         }
-        &self.tokens[self.cursor + k]
+    }
+
+    /// Returns the token `k` tokens behind of `cursor`.
+    fn get_back(&self, k: usize) -> &Token {
+        let i = self.cursor.saturating_sub(k);
+        if i >= self.tokens.len() {
+            self.tokens.first().unwrap()
+        } else {
+            &self.tokens[i]
+        }
     }
 
     /// Advances the parser `k` tokens forward.
@@ -130,12 +152,12 @@ impl<'a> Parser<'a> {
     /// as well as a boolean denoted whether or not the parser reached the EOF token during this maneuver.
     fn eat_until(&mut self, target: Tk) -> (usize, bool) {
         let mut i = 0;
-        
+
         while self.get(0).kind != target {
             if self.get(0).kind == Tk::Eof {
                 return (i, true);
             }
-            
+
             self.eat(1);
             i += 1;
         }
@@ -143,21 +165,66 @@ impl<'a> Parser<'a> {
         let eof_found = self.get(0).kind == Tk::Eof;
         (i, eof_found)
     }
+
+    fn expect(&mut self, what: &'static str, tk: TokenKind, eat: bool) -> Result<(), Error> {
+        // Look for the token kind.
+        if self.get(0).kind == tk {
+            if eat {
+                self.eat(1);
+            }
+            return Ok(());
+        }
+
+        // Return an error otherwise.
+        Err(Error::new(
+            Issue::InvalidSyntax,
+            self.get(0).span,
+            format!(
+                "Expected {what}, got `{}` instead.",
+                stringify_span!(self, self.get(0).span)
+            ),
+        ))
+    }
+
+    fn expect_many<const N: usize>(
+        &mut self,
+        what: &'static str,
+        tk: [TokenKind; N],
+        eat: bool,
+    ) -> Result<(), Error> {
+        // Look for the token kind
+        if tk.contains(&self.get(0).kind) {
+            if eat {
+                self.eat(1);
+            }
+            return Ok(());
+        }
+
+        // Otherwise return an error
+        Err(Error::new(
+            Issue::InvalidSyntax,
+            self.get(0).span,
+            format!(
+                "Expected {what}, got `{}` instead.",
+                stringify_span!(self, self.get(0).span)
+            ),
+        ))
+    }
 }
 
 impl<'a> Parser<'a> {
     // Begins: cursor -> LPAR
-    // Ends: cursor -> RPAR
+    // Ends: cursor -> after RPAR
     fn parse_call_args(&mut self) -> Vec<Handle<Expr>> {
         // Span of the LPAR
         let start_span = self.get(0).span;
-        
+
         // Empty args case check
         if self.get(1).kind == Tk::RPar {
-            self.eat(1);
+            self.eat(2);
             return vec![];
         }
-        
+
         let mut args: Vec<Handle<Expr>> = vec![];
 
         loop {
@@ -191,7 +258,7 @@ impl<'a> Parser<'a> {
                     } else {
                         continue;
                     }
-                },
+                }
                 Tk::Eof => {
                     self.errors.push(Error::new(
                         Issue::UnexpectedEoF,
@@ -199,7 +266,7 @@ impl<'a> Parser<'a> {
                         "This function call is missing a closing `)`.".into(),
                     ));
                     break;
-                },
+                }
                 _ => {
                     self.errors.push(Error::new(
                         Issue::InvalidSyntax,
@@ -224,6 +291,7 @@ impl<'a> Parser<'a> {
             }
         }
 
+        self.eat(1);
         args
     }
 }
@@ -245,7 +313,7 @@ impl<'a> Parser<'a> {
                     .expect("invalid byte sequence for integer literal!");
                 match str.parse::<i64>() {
                     Ok(value) => {
-                        expr = Expr::new(span, E::ExprInt { value });
+                        expr = Expr::new(span, E::Int { value });
                     }
                     Err(_) => {
                         self.eat(1);
@@ -262,7 +330,7 @@ impl<'a> Parser<'a> {
                     .expect("invalid byte sequence for integer literal!");
                 match str.parse::<f64>() {
                     Ok(value) => {
-                        expr = Expr::new(span, E::ExprFloat { value });
+                        expr = Expr::new(span, E::Float { value });
                     }
                     Err(_) => {
                         self.eat(1);
@@ -278,7 +346,7 @@ impl<'a> Parser<'a> {
                 let substring_handle = self.interner.intern(bytes);
                 expr = Expr::new(
                     span,
-                    E::ExprStr {
+                    E::Str {
                         value: substring_handle,
                     },
                 )
@@ -287,7 +355,7 @@ impl<'a> Parser<'a> {
                 let substring_handle = self.interner.intern(bytes);
                 expr = Expr::new(
                     span,
-                    E::ExprSymbol {
+                    E::Symbol {
                         name: substring_handle,
                     },
                 )
@@ -318,16 +386,15 @@ impl<'a> Parser<'a> {
             let args = self.parse_call_args();
 
             // After the call to `parse_call_args()`,
-            // cursor -> RPAR
+            // cursor -> after RPAR
 
-            let span = self.get(0).span.merge(&span);
-            expr = Expr::new(span, E::ExprCall { callee, args });
+            let span = self.get_back(1).span.merge(&span);
+            expr = Expr::new(span, E::Call { callee, args });
         } else {
             return Ok(callee);
         }
 
         // Advance PAST the RPAR
-        self.eat(1);
         Ok(self.ast.push_expr(expr))
     }
 
@@ -354,9 +421,8 @@ impl<'a> Parser<'a> {
         let span = span.merge(&self.ast.get_expr(operand).span);
 
         // Produce an expression
-        expr = Expr::new(span, E::ExprPrefixUnary { operand, op });
+        expr = Expr::new(span, E::UnaryPrefix { operand, op });
 
-        self.eat(1);
         Ok(self.ast.push_expr(expr))
     }
 
@@ -368,6 +434,7 @@ impl<'a> Parser<'a> {
 
         // Parse the current expression first
         let operand = self.parse_prefix_unary()?; // @mark NEXT CALL
+        eprintln!("(postfix unary) after stack back: `{:#?}`", self.get(0).kind);
 
         // Then look for a postfix unary operator
         match self.get(0).kind {
@@ -380,7 +447,7 @@ impl<'a> Parser<'a> {
         let span = span.merge(&self.get(0).span);
 
         // Produce an expression
-        expr = Expr::new(span, E::ExprPostfixUnary { operand, op });
+        expr = Expr::new(span, E::UnaryPostfix { operand, op });
 
         self.eat(1);
         Ok(self.ast.push_expr(expr))
@@ -394,6 +461,7 @@ impl<'a> Parser<'a> {
 
         // Parse the current expression first
         let lhs = self.parse_postfix_unary()?; // @mark NEXT CALL
+        eprintln!("(binary) after stack back: `{:#?}`", self.get(0).kind);
 
         // Then look for a binary operator
         match self.get(0).kind {
@@ -415,10 +483,10 @@ impl<'a> Parser<'a> {
         let span = span.merge(&self.ast.get_expr(rhs).span);
 
         // Produce an expression
-        expr = Expr::new(span, E::ExprBinary { lhs, rhs, op });
+        expr = Expr::new(span, E::BinaryArith { lhs, rhs, op });
 
-        // @(todo) implement postfixup algo here
-        self.eat(1);
+        // @todo implement postfixup algo here
+        // self.eat(1);
         Ok(self.ast.push_expr(expr))
     }
 
@@ -429,14 +497,15 @@ impl<'a> Parser<'a> {
 
         // Parse the current expression first
         let lhs = self.parse_binary()?; // @mark NEXT CALL
+        eprintln!("(assign) after stack back: `{:#?}`", self.get(0).kind);
 
         // Then look for a binary operator
         match self.get(0).kind {
-            Tk::Plus => op = Op::AddAssign,
-            Tk::Min => op = Op::SubAssign,
-            Tk::Star => op = Op::MulAssign,
-            Tk::Slash => op = Op::DivAssign,
-            Tk::Mod => op = Op::ModAssign,
+            Tk::PlusEq => op = Op::AddAssign,
+            Tk::MinEq => op = Op::SubAssign,
+            Tk::StarEq => op = Op::MulAssign,
+            Tk::SlashEq => op = Op::DivAssign,
+            Tk::ModEq => op = Op::ModAssign,
             Tk::StarStarEq => op = Op::PowAssign,
             Tk::SlashSlashEq => op = Op::FloorAssign,
             Tk::Eq => op = Op::Assign,
@@ -453,9 +522,152 @@ impl<'a> Parser<'a> {
         let span = span.merge(&self.ast.get_expr(rhs).span);
 
         // Produce an expression
-        expr = Expr::new(span, E::ExprAssign { lhs, rhs, op });
+        expr = Expr::new(
+            span,
+            E::Assign {
+                assignee: lhs,
+                value: rhs,
+                op,
+            },
+        );
 
-        self.eat(1);
         Ok(self.ast.push_expr(expr))
+    }
+}
+
+// ------------------------------------------------------------------------------------------------------------------ //
+// MARK: Statement Parsers
+// ------------------------------------------------------------------------------------------------------------------ //
+
+impl<'a> Parser<'a> {
+    fn parse_binding(&mut self) -> Result<Stmt, Error> {
+        let (start_span, _) = (self.get(0).span, self.get(0).kind);
+
+        // Check if this is a mutable binding and consume the keyword if it is
+        let mutable = self.get(1).kind == Tk::Mutable;
+        if mutable {
+            self.eat(1);
+        }
+
+        // Skip to what should be an symbol token
+        self.eat(1);
+
+        // Make sure there is a symbol and error if not
+        self.expect("a variable name", Tk::Symbol, false)?;
+
+        // Get the handle of the symbol's substring
+        let symbol = self
+            .interner
+            .intern(&self.source[self.get(0).span.as_range()]);
+
+        // Eat the symbol and get to the equals sign
+        self.eat(1);
+
+        // Now expect an equals sign
+        self.expect("'=' after variable name", Tk::Eq, true)?;
+
+        // Now get an initializer expression
+        let init = self.parse_expr()?;
+
+        // Compute span and return the statement
+        let span = self.get_back(1).span.merge(&start_span);
+        Ok(Stmt::new(
+            span,
+            StmtData::Binding {
+                symbol,
+                init,
+                mutable,
+            },
+        ))
+    }
+
+    pub fn parse_stmt(&mut self) -> Result<Handle<Stmt>, Error> {
+        let (span, kind) = (self.get(0).span, self.get(0).kind);
+
+        let res: Result<Stmt, Error> = match kind {
+            Tk::Let => self.parse_binding(),
+            //Tk::If => {}
+
+            // Non keyword statement i.e. expression statement
+            _ => {
+                let expr_handle = self.parse_expr()?;
+                let expr = self.ast.get_expr(expr_handle);
+
+                // Make sure the expression is actually effectful
+                match &expr.data {
+                    E::Call { callee: _, args: _ }
+                    | E::Assign {
+                        assignee: _,
+                        value: _,
+                        op: _,
+                    } => Ok(Stmt::new(expr.span, StmtData::Expr { expr: expr_handle })),
+                    _ => {
+                        // @todo add more to this error
+                        Err(Error::new(
+                            Issue::ExpectedExpression,
+                            span,
+                            "Expressions must be effectful to exist as statements like this."
+                                .into(),
+                        ))
+                    }
+                }
+            }
+        };
+
+        // Check for errors when getting the statement
+        let stmt = match res {
+            Ok(stmt) => stmt,
+            Err(error) => {
+                // Skip until next statement
+                while self.get(0).kind != Tk::Semicolon
+                    || self.get(0).kind != Tk::Eof
+                    || self.get(0).kind != Tk::Eol
+                {
+                    if self.get(0).kind == Tk::Eof {
+                        break;
+                    }
+                    self.eat(1);
+                }
+
+                return Err(error);
+            }
+        };
+
+        // Assume that each statement parser ends with
+        // cursor -> token AFTER the last token of the statement
+
+        // Check for an EoL or semicolon
+        match self.get(0).kind {
+            Tk::Semicolon | Tk::Eof | Tk::Eol => {
+                eprintln!("current: {:?} next: {:?}", self.get(0), self.get(1));
+                self.eat(1);
+                Ok(self.ast.push_stmt(stmt))
+            }
+
+            // Missing semicolon/newline case:
+            _ => {
+                let offender_span = self.get(0).span;
+
+                // Skip until next statement
+                while self.get(0).kind != Tk::Semicolon
+                    || self.get(0).kind != Tk::Eof
+                    || self.get(0).kind != Tk::Eol
+                {
+                    if self.get(0).kind == Tk::Eof {
+                        break;
+                    }
+                    self.eat(1);
+                }
+
+                return Err(Error::new(
+                    Issue::InvalidSyntax,
+                    offender_span,
+                    format!(
+                        "Expected a new line or `;` to end this statement, got `{}` instead.",
+                        stringify_span!(self, self.get(0).span)
+                    ),
+                ));
+            }
+        }
     }
 }

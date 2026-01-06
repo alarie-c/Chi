@@ -1,10 +1,19 @@
-use crate::{file::File, handle::Handle, interner::Interner, parsing::expr::{Expr, ExprData}};
+use crate::{
+    file::File,
+    handle::Handle,
+    interner::Interner,
+    parsing::{
+        expr::{Expr, ExprData},
+        stmt::{Block, Stmt, StmtData},
+    },
+};
 
 /// Used when printing substrings.
 const INVALID_STR: &'static str = "<invalid substring handle>";
 
 // Alias
 type E = ExprData;
+type S = StmtData;
 
 /// Used when printing substrings to resolve a handle into a string safely.
 macro_rules! stringify_handle {
@@ -24,8 +33,10 @@ pub struct Ast {
     file: Handle<File>,
     /// A container for all expressions.
     exprs: Vec<Expr>,
-    // @(temp) root holds expr handles
-    root: Vec<Handle<Expr>>,
+    /// A container for all statements.
+    stmts: Vec<Stmt>,
+    // @(temp) root holds stmt handles
+    root: Vec<Handle<Stmt>>,
 }
 
 impl Ast {
@@ -34,15 +45,26 @@ impl Ast {
         Self {
             file,
             exprs: vec![],
+            stmts: vec![],
             root: vec![],
         }
     }
 
     /// Pushes the given handle to the root container.
-    pub fn push_to_root(&mut self, handle: Handle<Expr>) {
+    pub fn push_to_root(&mut self, handle: Handle<Stmt>) {
         self.root.push(handle);
     }
 
+    /// Prints the AST the `stderr`.
+    pub fn pretty_print(&self, int: &Interner) {
+        // @temp printing just expressions
+        for stmt in &self.root {
+            self.print_stmt(0, int, *stmt);
+        }
+    }
+}
+
+impl Ast {
     /// Pushes an expression to the container and returns a handle to that expression.
     pub fn push_expr(&mut self, expr: Expr) -> Handle<Expr> {
         self.exprs.push(expr);
@@ -59,13 +81,24 @@ impl Ast {
         );
         &self.exprs[handle]
     }
+}
 
-    /// Prints the AST the `stderr`.
-    pub fn pretty_print(&self, int: &Interner) {
-        // @(temp) printing just expressions
-        for expr in &self.root {
-            self.print_expr(0, int, *expr);
-        }
+impl Ast {
+    /// Pushes a statement to the container and returns a handle to that statement.
+    pub fn push_stmt(&mut self, stmt: Stmt) -> Handle<Stmt> {
+        self.stmts.push(stmt);
+        Handle::<Stmt>::new(self.stmts.len() - 1)
+    }
+
+    /// Gets the statement from a given handle. This assumes that the handle is valid and will fatally error
+    /// if not, since `Handle<Stmt>`s are only ever supposed to be created from `push_stmt()`.
+    pub fn get_stmt(&self, handle: Handle<Stmt>) -> &Stmt {
+        assert!(
+            handle.index() < self.stmts.len(),
+            "stmt handle `{}` out of bounds!",
+            handle.index()
+        );
+        &self.stmts[handle]
     }
 }
 
@@ -74,6 +107,57 @@ impl Ast {
 // ------------------------------------------------------------------------------------------------------------------ //
 
 impl Ast {
+    fn print_block(&self, i: usize, int: &Interner, block: &Block) {
+        let spaces = " ".repeat(i);
+        eprintln!("{spaces} BLOCK (");
+        
+        for stmt in &block.stmts {
+            self.print_stmt(i + 2, int, *stmt);
+        }
+
+        eprintln!("{spaces})");
+    }
+
+    fn print_stmt(&self, i: usize, int: &Interner, stmt: Handle<Stmt>) {
+        let spaces = " ".repeat(i);
+        let stmt = self.get_stmt(stmt);
+        eprint!("{spaces}");
+
+        match &stmt.data {
+            S::Binding {
+                symbol,
+                init,
+                mutable,
+            } => {
+                let _str = if *mutable {
+                    "MUTABLE BINDING"
+                } else {
+                    "BINDING"
+                };
+                eprintln!("{_str} '{}'", stringify_handle!(int, *symbol));
+                self.print_expr(i + 2, int, *init);
+            }
+            S::Expr { expr } => {
+                eprintln!("EXPRESSION STATEMENT");
+                self.print_expr(i + 2, int, *expr);
+            }
+            S::If { cond, if_br, el_br } => {
+                eprintln!("IF");
+                self.print_expr(i + 2, int, *cond);
+                eprintln!("{spaces}THEN");
+                self.print_block(i, int, if_br);
+
+                if let Some(block) = el_br {
+                    eprintln!("{spaces}ELSE");
+                    self.print_block(i, int, block);
+                }
+
+                eprintln!("{spaces}END IF");
+            }
+            _ => unreachable!("unknown statement in ast pretty printer!"),
+        }
+    }
+
     fn print_expr(&self, i: usize, int: &Interner, expr: Handle<Expr>) {
         let spaces = " ".repeat(i);
         let expr = self.get_expr(expr);
@@ -83,38 +167,49 @@ impl Ast {
             //
             // Atoms
             //
-            E::ExprInt { value } => eprintln!("INT ({})", value),
-            E::ExprFloat { value } => eprintln!("FLOAT ({})", value),
-            E::ExprBool { value } => eprintln!("BOOL ({})", value),
-            E::ExprStr { value } => eprintln!("STR ({})", stringify_handle!(int, *value)),
-            E::ExprSymbol { name } => eprintln!("SYMBOL ({})", stringify_handle!(int, *name)),
+            E::Int { value } => eprintln!("INT ({})", value),
+            E::Float { value } => eprintln!("FLOAT ({})", value),
+            E::Bool { value } => eprintln!("BOOL ({})", value),
+            E::Str { value } => eprintln!("STR ({})", stringify_handle!(int, *value)),
+            E::Symbol { name } => eprintln!("SYMBOL ({})", stringify_handle!(int, *name)),
 
             //
             // Compound
             //
-            E::ExprPostfixUnary { operand, op } => {
+            E::UnaryPostfix { operand, op } => {
                 eprintln!("POSTFIX UNARY ({:?})", op);
                 self.print_expr(i + 2, int, *operand);
             }
-            E::ExprPrefixUnary { operand, op } => {
+            E::UnaryPrefix { operand, op } => {
                 eprintln!("PREFIX UNARY ({:?})", op);
                 self.print_expr(i + 2, int, *operand);
             }
-            E::ExprBinary { lhs, rhs, op } => {
+            E::BinaryArith { lhs, rhs, op } => {
                 eprintln!("BINARY ({:?})", op);
                 self.print_expr(i + 2, int, *lhs);
                 self.print_expr(i + 2, int, *rhs);
             }
-            E::ExprCall { callee, args } => {
+            E::Call { callee, args } => {
                 eprintln!("CALL");
                 self.print_expr(i + 2, int, *callee);
-                eprintln!("{spaces}  ARGS (");
+                eprintln!("{spaces}  ARGS");
                 for arg in args {
                     self.print_expr(i + 4, int, *arg);
                 }
-                eprintln!("{spaces}  )");
+                eprintln!("{spaces}  END ARGS");
             }
-
+            E::Assign {
+                assignee,
+                value,
+                op,
+            } => {
+                eprintln!("ASSIGN ({:?})", op);
+                self.print_expr(i + 2, int, *value);
+                eprintln!("{spaces}TO");
+                self.print_expr(i + 2, int, *assignee);
+                eprintln!("{spaces}END ASSIGN");
+            }
+            
             _ => unreachable!("unknown expression data in pretty printer!"),
         }
     }

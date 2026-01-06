@@ -12,45 +12,45 @@ pub enum ExprData {
     //
     // Atom
     //
-    ExprInt {
+    Int {
         value: i64,
     },
-    ExprFloat {
+    Float {
         value: f64,
     },
-    ExprBool {
+    Bool {
         value: bool,
     },
-    ExprStr {
+    Str {
         value: Handle<Substring>,
     },
-    ExprSymbol {
+    Symbol {
         name: Handle<Substring>,
     },
 
     //
     // Compound
     //
-    ExprCall {
+    Call {
         callee: Handle<Expr>,
         args: Vec<Handle<Expr>>,
     },
-    ExprPrefixUnary {
+    UnaryPrefix {
         operand: Handle<Expr>,
         op: Op,
     },
-    ExprPostfixUnary {
+    UnaryPostfix {
         operand: Handle<Expr>,
         op: Op,
     },
-    ExprBinary {
+    BinaryArith {
         lhs: Handle<Expr>,
         rhs: Handle<Expr>,
         op: Op,
     },
-    ExprAssign {
-        lhs: Handle<Expr>,
-        rhs: Handle<Expr>,
+    Assign {
+        assignee: Handle<Expr>,
+        value: Handle<Expr>,
         op: Op,
     }
 }

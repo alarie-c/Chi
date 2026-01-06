@@ -120,7 +120,7 @@ impl<'a> Lexer<'a> {
             0 => {
                 token = Token {
                     kind: Tk::Eof,
-                    span: span(1),
+                    span: span(0),
                 };
             }
             b'\n' => {
