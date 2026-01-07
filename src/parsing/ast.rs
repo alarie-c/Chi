@@ -3,19 +3,17 @@ use crate::{
     handle::Handle,
     interner::Interner,
     parsing::{
-        decl::{Decl, DeclData},
-        expr::{Expr, ExprData},
-        stmt::{Block, Stmt, StmtData},
+        nodes::decl::{self, Decl},
+        nodes::expr::{self, Expr},
+        nodes::stmt::{self, Stmt},
     },
 };
 
-/// Used when printing substrings.
-const INVALID_STR: &'static str = "<invalid substring handle>";
+// ------------------------------------------------------------------------------------------------------------------ //
+// MARK: Macros
+// ------------------------------------------------------------------------------------------------------------------ //
 
-// Alias
-type E = ExprData;
-type S = StmtData;
-type D = DeclData;
+const INVALID_STR: &'static str = "<invalid substring handle>";
 
 /// Used when printing substrings to resolve a handle into a string safely.
 macro_rules! stringify_handle {
@@ -39,7 +37,7 @@ pub struct Ast {
     stmts: Vec<Stmt>,
     /// A container for all statements.
     decls: Vec<Decl>,
-    // @(temp) root holds Decl handles
+
     root: Vec<Handle<Decl>>,
 }
 
@@ -131,7 +129,7 @@ impl Ast {
 // ------------------------------------------------------------------------------------------------------------------ //
 
 impl Ast {
-    fn print_block(&self, i: usize, int: &Interner, block: &Block) {
+    fn print_block(&self, i: usize, int: &Interner, block: &stmt::Block) {
         let spaces = " ".repeat(i);
         eprintln!("{spaces} BLOCK (");
 
@@ -148,10 +146,12 @@ impl Ast {
         eprint!("{spaces}");
 
         match &decl.data {
-            D::FnDecl { sig } => {
-                eprintln!("FUNCTION DECL '{}'", stringify_handle!(int, sig.name));
+            decl::Data::FnDecl { signature } => {
+                eprintln!("FUNCTION DECL '{}'", stringify_handle!(int, signature.name));
+                
+                // Print parameters
                 eprintln!("{spaces}PARAMS");
-                for p in &sig.params {
+                signature.parameters.iter().for_each(|p| {
                     eprintln!(
                         "{spaces}  '{}' {} {} WITH TYPE",
                         stringify_handle!(int, p.ext_name),
@@ -163,10 +163,12 @@ impl Ast {
                         eprintln!("{spaces}  AND DEFAULT");
                         self.print_expr(i + 4, int, def);
                     }
-                }
+                });
                 eprintln!("{spaces}END PARAMS");
+
+                // Print the return type if it exists
                 eprintln!("{spaces}RETURN TYPE");
-                if let Some(rt) = sig.return_type {
+                if let Some(rt) = signature.return_type {
                     self.print_expr(i + 4, int, rt);
                 } else {
                     eprintln!("{spaces}  NONE");
@@ -183,7 +185,7 @@ impl Ast {
         eprint!("{spaces}");
 
         match &stmt.data {
-            S::Binding(binding) => {
+            stmt::Data::Binding(binding) => {
                 let _str = if binding.mutable {
                     "MUTABLE BINDING"
                 } else {
@@ -192,11 +194,11 @@ impl Ast {
                 eprintln!("{_str} '{}'", stringify_handle!(int, binding.symbol));
                 self.print_expr(i + 2, int, binding.init);
             }
-            S::Expr { expr } => {
+            stmt::Data::Expr(expr) => {
                 eprintln!("EXPRESSION STATEMENT");
                 self.print_expr(i + 2, int, *expr);
             }
-            S::If { cond, if_br, el_br } => {
+            stmt::Data::If { cond, if_br, el_br } => {
                 eprintln!("IF");
                 self.print_expr(i + 2, int, *cond);
                 eprintln!("{spaces}THEN");
@@ -209,7 +211,7 @@ impl Ast {
 
                 eprintln!("{spaces}END IF");
             }
-            _ => unreachable!("unknown statement in ast pretty printer!"),
+            //_ => unreachable!("unknown statement in ast pretty printer!"),
         }
     }
 
@@ -222,46 +224,41 @@ impl Ast {
             //
             // Atoms
             //
-            E::Int { value } => eprintln!("INT ({})", value),
-            E::Float { value } => eprintln!("FLOAT ({})", value),
-            E::Bool { value } => eprintln!("BOOL ({})", value),
-            E::Str { value } => eprintln!("STR ({})", stringify_handle!(int, *value)),
-            E::Symbol { name } => eprintln!("SYMBOL ({})", stringify_handle!(int, *name)),
+            expr::Data::Int(value) => eprintln!("INT ({})", value),
+            expr::Data::Float(value) => eprintln!("FLOAT ({})", value),
+            expr::Data::Bool(value) => eprintln!("BOOL ({})", value),
+            expr::Data::Str(value) => eprintln!("STR ({})", stringify_handle!(int, *value)),
+            expr::Data::Symbol(name) => eprintln!("SYMBOL ({})", stringify_handle!(int, *name)),
 
             //
             // Compound
             //
-            E::UnaryPostfix { operand, op } => {
-                eprintln!("POSTFIX UNARY ({:?})", op);
-                self.print_expr(i + 2, int, *operand);
+            expr::Data::Postfix(opr) => {
+                eprintln!("POSTFIX UNARY ({:?})", opr.op);
+                self.print_expr(i + 2, int, opr.operand);
             }
-            E::UnaryPrefix { operand, op } => {
-                eprintln!("PREFIX UNARY ({:?})", op);
-                self.print_expr(i + 2, int, *operand);
+            expr::Data::Prefix(opr) => {
+                eprintln!("PREFIX UNARY ({:?})", opr.op);
+                self.print_expr(i + 2, int, opr.operand);
             }
-            E::BinaryArith { lhs, rhs, op } => {
-                eprintln!("BINARY ({:?})", op);
-                self.print_expr(i + 2, int, *lhs);
-                self.print_expr(i + 2, int, *rhs);
+            expr::Data::Arithmetic(opr) => {
+                eprintln!("BINARY ({:?})", opr.op);
+                self.print_expr(i + 2, int, opr.lhs);
+                self.print_expr(i + 2, int, opr.rhs);
             }
-            E::Call { callee, args } => {
+            expr::Data::Call { callee, args } => {
                 eprintln!("CALL");
                 self.print_expr(i + 2, int, *callee);
                 eprintln!("{spaces}  ARGS");
-                for arg in args {
-                    self.print_expr(i + 4, int, *arg);
-                }
+                args.iter()
+                    .for_each(|arg| self.print_expr(i + 4, int, *arg));
                 eprintln!("{spaces}  END ARGS");
             }
-            E::Assign {
-                assignee,
-                value,
-                op,
-            } => {
-                eprintln!("ASSIGN ({:?})", op);
-                self.print_expr(i + 2, int, *value);
+            expr::Data::Assign(opr) => {
+                eprintln!("ASSIGN ({:?})", opr.op);
+                self.print_expr(i + 2, int, opr.rhs);
                 eprintln!("{spaces}TO");
-                self.print_expr(i + 2, int, *assignee);
+                self.print_expr(i + 2, int, opr.lhs);
                 eprintln!("{spaces}END ASSIGN");
             }
 

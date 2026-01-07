@@ -6,19 +6,22 @@ use crate::{
     operator::Op,
     parsing::{
         ast::Ast,
-        decl::{Decl, DeclData, decl_fragments},
-        expr::{Expr, ExprData},
-        stmt::{Stmt, StmtData, stmt_fragments},
+        nodes::{
+            decl::{self, Decl},
+            expr::{self, Expr, UnaryOper},
+            stmt::{self, Stmt},
+        },
     },
     token::{Token, TokenKind},
 };
 
 // Aliases
 type Issue = ErrorIssue;
-type E = ExprData;
-type S = StmtData;
-type D = DeclData;
 type Tk = TokenKind;
+
+// ------------------------------------------------------------------------------------------------------------------ //
+// MARK: Parser Macros
+// ------------------------------------------------------------------------------------------------------------------ //
 
 macro_rules! stringify_span {
     ($self:expr, $span:expr) => {{
@@ -241,7 +244,214 @@ impl<'a> Parser<'a> {
     }
 }
 
+// ------------------------------------------------------------------------------------------------------------------ //
+// MARK: Components Parsers
+// ------------------------------------------------------------------------------------------------------------------ //
+
 impl<'a> Parser<'a> {
+    fn parse_type_name(&mut self) -> Result<Handle<Expr>, Error> {
+        // @temp this just looks for a symbol, but in the future it could be an entire expression i.e. path
+
+        // Handle the error case
+        if self.get(0).kind != Tk::Symbol {
+            Err(Error::new(
+                Issue::ExpectedTypeName,
+                self.get(0).span,
+                format!(
+                    "Expected a type name, got `{}` instead.",
+                    stringify_span!(self, self.get(0).span)
+                ),
+            ))
+
+        // Otherwise get the substring, intern it, take a handle, and create the expression.
+        } else {
+            let substring_handle = self
+                .interner
+                .intern(&self.source[self.get(0).span.as_range()]);
+            
+            // Consume the symbol
+            self.eat(1);
+            
+            // Return the expression handle
+            Ok(self.ast.push_expr(Expr::new(
+                self.get_back(1).span,
+                expr::Data::Symbol(substring_handle),
+            )))
+        }
+    }
+
+    // cursor -> first token of param
+    fn parse_parameter(&mut self) -> Result<decl::Parameter, Error> {    
+        //
+        // Mutability
+        //
+        let mutable = if self.get(0).kind == Tk::Mutable {
+            self.eat(1);
+            true
+        } else {
+            false
+        };
+
+        //
+        // Labeled exterior name
+        //
+        let ext_name_maybe: Option<Handle<Substring>> = if self.get(0).kind == Tk::Label {
+            // Take the span and go to the actual name
+            let span = self.get(0).span;
+            self.eat(1);
+
+            // Compute start/end without the `'`
+            let start = span.offset + 1;
+            let end = span.end() - 1;
+
+            // Get a handle to that substring
+            Some(self.interner.intern(&self.source[start..end]))
+        } else {
+            // Otherwise set it to nothing (for now)
+            None
+        };
+
+        //
+        // Interior name
+        //
+        self.expect("parameter name", Tk::Symbol, false)?;
+        let int_name = self
+            .interner
+            .intern(&self.source[self.get(0).span.as_range()]);
+
+        // Advance to (what should be) the colon
+        self.eat(1);
+
+        //
+        // Type name
+        //
+
+        // Ensure type name
+        self.expect(
+            "`:` after parameter name to annotate its type",
+            Tk::Colon,
+            true,
+        )?;
+
+        // Extract type name
+        let type_name = self.parse_type_name()?;
+
+        // After getting the type name,
+        // cursor -> after type name expr
+
+        //
+        // Default value
+        //
+        let default: Option<Handle<Expr>> = if self.get(0).kind == Tk::Eq {
+            self.eat(1);
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+
+        // After getting the default value,
+        // cursor -> after eq (probably comma or rpar)
+
+        // Get the exterior name or use the interior one as a fallback
+        let ext_name = ext_name_maybe.unwrap_or(int_name);
+
+        // Return the parameter
+        Ok(decl::Parameter {
+            ext_name,
+            int_name,
+            type_name,
+            mutable,
+            default,
+        })
+    }
+
+    /// cursor -> LPAR
+    /// cursor -> one after RPAR
+    fn parse_fn_params(&mut self) -> Vec<decl::Parameter> {
+        let (start_span, _) = (self.get(0).span, self.get(0).kind);
+
+        // The no parameter case
+        if self.get(1).kind == Tk::RPar {
+            self.eat(2);
+            return vec![];
+        }
+
+        let mut params: Vec<decl::Parameter> = vec![];
+
+        loop {
+            self.eat(1);
+
+            //
+            // Parse the parameter and make sure it's valid
+            //
+            let param = match self.parse_parameter() {
+                Ok(param) => param,
+                Err(error) => {
+                    // Internalize the error and then recover
+                    self.errors.push(error);
+
+                    // Recover by skipping to the next comma or rpar
+                    // We do a check to make sure we dont attempt to parse another parameter on an EOF token.
+                    skip_to!(self, Tk::Comma, Tk::RPar);
+                    match self.get(0).kind {
+                        Tk::RPar => break,
+                        Tk::Comma => continue,
+                        _ => return params,
+                    }
+                }
+            };
+
+            // Push the parameter
+            params.push(param);
+
+            //
+            // Validate the next token or recover
+            //
+            match self.get(0).kind {
+                Tk::RPar => break,
+                Tk::Comma => continue,
+
+                // EOF case if we went too far or it's missing a closing RPAR
+                Tk::Eof => {
+                    self.errors.push(Error::new(
+                        Issue::UnexpectedEoF,
+                        start_span,
+                        "This function call is missing a closing `)`.".into(),
+                    ));
+                    break;
+                }
+
+                // Literally anything else is a spectacular failure
+                // just give up here and try to recover somewhere safe.
+                _ => {
+                    self.errors.push(Error::new(
+                        Issue::InvalidSyntax,
+                        self.get(0).span,
+                        "Expected either `)` to end the function declaration or `,` to continue listing parameters.".into(),
+                    ));
+
+                    // Advance until the RPAR is found
+                    let (_, eof) = self.eat_until(Tk::RPar);
+
+                    // Handle the EOF case
+                    if eof {
+                        self.errors.push(Error::new(
+                            Issue::UnexpectedEoF,
+                            start_span,
+                            "This function call is missing a closing `)`.".into(),
+                        ));
+                    }
+
+                    break;
+                }
+            }
+        }
+
+        // Advance to one past the rpar
+        self.eat(1);
+        params
+    }
+
     // Begins: cursor -> LPAR
     // Ends: cursor -> after RPAR
     fn parse_call_args(&mut self) -> Vec<Handle<Expr>> {
@@ -342,7 +552,7 @@ impl<'a> Parser<'a> {
                     .expect("invalid byte sequence for integer literal!");
                 match str.parse::<i64>() {
                     Ok(value) => {
-                        expr = Expr::new(span, E::Int { value });
+                        expr = Expr::new(span, expr::Data::Int(value));
                     }
                     Err(_) => {
                         self.eat(1);
@@ -359,7 +569,7 @@ impl<'a> Parser<'a> {
                     .expect("invalid byte sequence for integer literal!");
                 match str.parse::<f64>() {
                     Ok(value) => {
-                        expr = Expr::new(span, E::Float { value });
+                        expr = Expr::new(span, expr::Data::Float(value));
                     }
                     Err(_) => {
                         self.eat(1);
@@ -373,21 +583,11 @@ impl<'a> Parser<'a> {
             }
             Tk::Str => {
                 let substring_handle = self.interner.intern(bytes);
-                expr = Expr::new(
-                    span,
-                    E::Str {
-                        value: substring_handle,
-                    },
-                )
+                expr = Expr::new(span, expr::Data::Str(substring_handle))
             }
             Tk::Symbol => {
                 let substring_handle = self.interner.intern(bytes);
-                expr = Expr::new(
-                    span,
-                    E::Symbol {
-                        name: substring_handle,
-                    },
-                )
+                expr = Expr::new(span, expr::Data::Symbol(substring_handle))
             }
             _ => {
                 self.eat(1);
@@ -418,7 +618,8 @@ impl<'a> Parser<'a> {
             // cursor -> after RPAR
 
             let span = self.get_back(1).span.merge(&span);
-            expr = Expr::new(span, E::Call { callee, args });
+            let args: expr::Arguments = args.into();
+            expr = Expr::new(span, expr::Data::Call { callee, args });
         } else {
             return Ok(callee);
         }
@@ -446,11 +647,10 @@ impl<'a> Parser<'a> {
         // Then parse an expression on this token
         let operand = self.parse_expr()?;
 
-        // Merge the spans
+        // Merge the spans and make the oper
         let span = span.merge(&self.ast.get_expr(operand).span);
-
-        // Produce an expression
-        expr = Expr::new(span, E::UnaryPrefix { operand, op });
+        let oper = UnaryOper { operand, op };
+        expr = Expr::new(span, expr::Data::Prefix(oper));
 
         Ok(self.ast.push_expr(expr))
     }
@@ -475,12 +675,12 @@ impl<'a> Parser<'a> {
             _ => return Ok(operand),
         }
 
-        // Merge the spans
+        // Merge the spans and make the oper
         let span = span.merge(&self.get(0).span);
+        let oper = UnaryOper { operand, op };
+        expr = Expr::new(span, expr::Data::Postfix(oper));
 
-        // Produce an expression
-        expr = Expr::new(span, E::UnaryPostfix { operand, op });
-
+        // Advance for the next iteration
         self.eat(1);
         Ok(self.ast.push_expr(expr))
     }
@@ -511,11 +711,10 @@ impl<'a> Parser<'a> {
         // Then parse an expression on this token
         let rhs = self.parse_expr()?;
 
-        // Merge the spans
+        // Merge the spans and make the oper
         let span = span.merge(&self.ast.get_expr(rhs).span);
-
-        // Produce an expression
-        expr = Expr::new(span, E::BinaryArith { lhs, rhs, op });
+        let oper = expr::BinaryOper { lhs, rhs, op };
+        expr = Expr::new(span, expr::Data::Arithmetic(oper));
 
         // @todo implement postfixup algo here
         // self.eat(1);
@@ -550,19 +749,12 @@ impl<'a> Parser<'a> {
         // Then parse an expression on this token
         let rhs = self.parse_expr()?;
 
-        // Merge the spans
+        // Merge the spans and make the oper
         let span = span.merge(&self.ast.get_expr(rhs).span);
+        let oper = expr::BinaryOper { lhs, rhs, op };
+        expr = Expr::new(span, expr::Data::Assign(oper));
 
-        // Produce an expression
-        expr = Expr::new(
-            span,
-            E::Assign {
-                assignee: lhs,
-                value: rhs,
-                op,
-            },
-        );
-
+        // Do not advance (call to `parse.expr()` did it for us)
         Ok(self.ast.push_expr(expr))
     }
 }
@@ -603,35 +795,39 @@ impl<'a> Parser<'a> {
 
         // Compute span and return the statement
         let span = self.get_back(1).span.merge(&start_span);
-        let binding = stmt_fragments::Binding {
+        let binding = stmt::Binding {
             symbol,
             init,
             mutable,
         };
 
-        Ok(Stmt::new(span, S::Binding(binding)))
+        Ok(Stmt::new(span, stmt::Data::Binding(binding)))
     }
 
     pub fn parse_stmt(&mut self) -> Result<Handle<Stmt>, Error> {
         let (span, kind) = (self.get(0).span, self.get(0).kind);
 
+        //
+        // Make a statement based on leading keyword
+        //
         let res: Result<Stmt, Error> = match kind {
             Tk::Let => self.parse_binding(),
-            //Tk::If => {}
 
-            // Non keyword statement i.e. expression statement
+            //
+            // Fallback to expression statement
+            //
             _ => {
                 let expr_handle = self.parse_expr()?;
                 let expr = self.ast.get_expr(expr_handle);
 
                 // Make sure the expression is actually effectful
                 match &expr.data {
-                    E::Call { callee: _, args: _ }
-                    | E::Assign {
-                        assignee: _,
-                        value: _,
-                        op: _,
-                    } => Ok(Stmt::new(expr.span, StmtData::Expr { expr: expr_handle })),
+                    // Effectful expression
+                    expr::Data::Call { callee: _, args: _ } | expr::Data::Assign(_) => {
+                        Ok(Stmt::new(expr.span, stmt::Data::Expr(expr_handle)))
+                    }
+
+                    // Non-effectful expressions (error here)
                     _ => {
                         // @todo add more to this error
                         Err(Error::new(
@@ -688,257 +884,38 @@ impl<'a> Parser<'a> {
 // ------------------------------------------------------------------------------------------------------------------ //
 
 impl<'a> Parser<'a> {
-    fn parse_type_name(&mut self) -> Result<Handle<Expr>, Error> {
-        if self.get(0).kind != Tk::Symbol {
-            Err(Error::new(
-                Issue::ExpectedTypeName,
-                self.get(0).span,
-                format!(
-                    "Expected a type name, got `{}` instead.",
-                    stringify_span!(self, self.get(0).span)
-                ),
-            ))
-        } else {
-            let substring_handle = self
-                .interner
-                .intern(&self.source[self.get(0).span.as_range()]);
-            Ok(self.ast.push_expr(Expr::new(
-                self.get(0).span,
-                E::Symbol {
-                    name: substring_handle,
-                },
-            )))
-        }
-    }
-
-    /// cursor -> LPAR
-    /// cursor -> one after RPAR
-    fn parse_parameters(&mut self) -> Vec<decl_fragments::Parameter> {
-        let (start_span, _) = (self.get(0).span, self.get(0).kind);
-
-        // The no parameter case
-        if self.get(1).kind == Tk::RPar {
-            self.eat(2);
-            return vec![];
-        }
-
-        let mut params: Vec<decl_fragments::Parameter> = vec![];
-
-        loop {
-            // Move to the beginning of the first parameter
-            self.eat(1);
-
-            // Look for mutable
-            let mutable = if self.get(0).kind == Tk::Mutable {
-                self.eat(1);
-                true
-            } else {
-                false
-            };
-
-            // Look for a label for exterior name
-            let ext_name_maybe: Option<Handle<Substring>> = if self.get(0).kind == Tk::Label {
-                // Take the span and go to the actual name
-                let span = self.get(0).span;
-                self.eat(1);
-
-                // Compute start/end without the `'`
-                let start = span.offset + 1;
-                let end = span.end() - 1;
-
-                // Get a handle to that substring
-                Some(self.interner.intern(&self.source[start..end]))
-            } else {
-                // Otherwise set it to nothing (for now)
-                None
-            };
-
-            // Make sure there exists some interior name token
-            let int_name: Handle<Substring> = match self.expect("parameter name", Tk::Symbol, true)
-            {
-                Ok(()) => self
-                    .interner
-                    .intern(&self.source[self.get(0).span.as_range()]),
-
-                // If there isn't, either skip to the next param (or end of params)
-                Err(error) => {
-                    self.errors.push(error);
-                    skip_to!(self, Tk::RPar, Tk::Comma);
-
-                    // Break on the RPAR (end params)
-                    if self.get(0).kind == Tk::RPar {
-                        break;
-
-                    // Or try for another parameter
-                    } else {
-                        continue;
-                    }
-                }
-            };
-
-            // Now check for a colon and handle the error
-            match self.expect(
-                "`:` after parameter name to annotate its type",
-                Tk::Colon,
-                true,
-            ) {
-                Ok(()) => {}
-                Err(error) => {
-                    self.errors.push(error);
-                    skip_to!(self, Tk::RPar, Tk::Comma);
-
-                    // Break on the RPAR (end params)
-                    if self.get(0).kind == Tk::RPar {
-                        break;
-
-                    // Or try for another parameter
-                    } else {
-                        continue;
-                    }
-                }
-            }
-
-            // Look for a type name and handle the error
-            let type_name = match self.parse_type_name() {
-                Ok(type_expr) => type_expr,
-                Err(error) => {
-                    self.errors.push(error);
-                    skip_to!(self, Tk::RPar, Tk::Comma);
-
-                    // Break on the RPAR (end params)
-                    if self.get(0).kind == Tk::RPar {
-                        break;
-
-                    // Or try for another parameter
-                    } else {
-                        continue;
-                    }
-                }
-            };
-            // cursor -> after type name expr
-
-            // Look for a equals in case of default
-            let default: Option<Handle<Expr>> = if self.get(0).kind == Tk::Eq {
-                // First consume that Eq
-                self.eat(1);
-
-                // Then try to parse an expression
-                match self.parse_expr() {
-                    // Get the default expression
-                    Ok(expr_handle) => Some(expr_handle),
-
-                    // Handle an error in the default expression
-                    Err(error) => {
-                        self.errors.push(error);
-                        skip_to!(self, Tk::RPar, Tk::Comma);
-
-                        // Break on the RPAR (end params)
-                        if self.get(0).kind == Tk::RPar {
-                            break;
-
-                        // Or try for another parameter
-                        } else {
-                            continue;
-                        }
-                    }
-                }
-            } else {
-                None
-            };
-            // cursor -> after Eq (probably comma or Rpar)
-
-            // Get the exterior name or use the interior one as a fallback
-            let ext_name = ext_name_maybe.unwrap_or(int_name);
-
-            // Create the parameter
-            let param = decl_fragments::Parameter {
-                ext_name,
-                int_name,
-                type_name,
-                mutable,
-                default,
-            };
-
-            // Push the parameter
-            params.push(param);
-
-            // Expect a comma to come after or close with an RPar
-            match self.get(0).kind {
-                Tk::RPar => break,
-                Tk::Comma => {
-                    // Make sure the comma is followed by an argument.
-                    if self.get(1).kind == Tk::RPar {
-                        self.errors.push(Error::new(
-                            Issue::InvalidSyntax,
-                            self.get(0).span,
-                            "Expected another parameter after the comma, got `)` instead.".into(),
-                        ));
-
-                        // Advance to the RPAR and then return.
-                        self.eat(1);
-                        break;
-
-                    // Otherwise, just continue. This is the ONLY case that is a valid continuation of the loop!
-                    } else {
-                        continue;
-                    }
-                }
-                Tk::Eof => {
-                    self.errors.push(Error::new(
-                        Issue::UnexpectedEoF,
-                        start_span,
-                        "This function call is missing a closing `)`.".into(),
-                    ));
-                    break;
-                }
-                _ => {
-                    self.errors.push(Error::new(
-                        Issue::InvalidSyntax,
-                        self.get(0).span,
-                        "Expected either `)` to end the function declaration or `,` to continue listing arguments.".into(),
-                    ));
-
-                    // Advance until the RPAR is found
-                    let (_, eof) = self.eat_until(Tk::RPar);
-
-                    // Handle the EOF case
-                    if eof {
-                        self.errors.push(Error::new(
-                            Issue::UnexpectedEoF,
-                            start_span,
-                            "This function call is missing a closing `)`.".into(),
-                        ));
-                    }
-
-                    break;
-                }
-            }
-        }
-
-        self.eat(1);
-        params
-    }
-
     /// cursor -> `FUNCTION`
     fn parse_fn(&mut self) -> Result<Handle<Decl>, Error> {
         let (start_span, _) = (self.get(0).span, self.get(0).kind);
+        self.eat(1);
 
         // The next thing should be a name for the function, which in the future could be an expression (like a path),
         // but for now we can just bullshit it
-        self.expect("function name", Tk::Symbol, true)?;
 
-        // Extract the name from here
+        //
+        // Ensure function name
+        //
+        self.expect("function name", Tk::Symbol, false)?;
+
+        // Extract the name here
         let name = self
             .interner
             .intern(&self.source[self.get(0).span.as_range()]);
 
+        // Advance to (what should be) an lpar
+        self.eat(1);
+
         // Then look for a LPAR
-        self.expect("`(` to begin function parameters", Tk::LPar, true)?;
+        self.expect("`(` to begin function parameters", Tk::LPar, false)?;
 
-        // Then get the parameters
-        let params = self.parse_parameters();
+        //
+        // Function parameters
+        //
+        let params = self.parse_fn_params();
 
-        // Then look for a return type, if it exists
+        //
+        // Return type if it exists
+        //
         let return_type: Option<Handle<Expr>> = if self.get(0).kind == Tk::Arrow {
             // First consume that arrow
             self.eat(1);
@@ -959,19 +936,31 @@ impl<'a> Parser<'a> {
             None
         };
 
+        //
+        // Finish off the declaration
+        //
+        self.expect_many(
+            "either `{` to begin function body, or a new line to complete the function declaration.",
+            [Tk::Eol, Tk::Eof, Tk::Semicolon, Tk::LCurl],
+            true
+        )?;
+
         // Then look to see if this is just a declaration or a definition
-        if self.get(0).kind != Tk::LCurl {
-            let span = self.get(0).span.merge(&start_span);
-            let def = D::FnDecl {
-                sig: decl_fragments::FnSig {
-                    name,
-                    params,
-                    return_type,
-                }
-            };
-            return Ok(self.ast.push_decl(Decl::new(span, def)))
+        
+        //
+        // Function declaration
+        //
+        if self.get_back(1).kind != Tk::LCurl {
+            let span = self.get_back(1).span.merge(&start_span);
+            let parameters: decl::Parameters = params.into();
+            let signature = decl::FnSignature { name, parameters, return_type };
+            let def = decl::Data::FnDecl { signature };
+            return Ok(self.ast.push_decl(Decl::new(span, def)));
         }
 
+        //
+        // Function definition
+        //
         unreachable!("def not supported yet chief")
     }
 
