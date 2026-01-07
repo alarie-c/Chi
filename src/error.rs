@@ -76,11 +76,13 @@ pub enum ErrorIssue {
     //
     UnrecognizedChar,
     UnterminatedString,
+    UnterminatedLabel,
 
     //
     // Parse Issues
     //
     ExpectedExpression,
+    ExpectedTypeName,
     InvalidSyntax,
     UnexpectedEoF,
     InvalidExprStmt,
@@ -101,11 +103,13 @@ impl std::fmt::Display for ErrorIssue {
             match self {
                 Issue::UnrecognizedChar => "Unrecognized Character",
                 Issue::UnterminatedString => "Unterminated String",
-
+                Issue::UnterminatedLabel => "Unterminated Label",
+                
                 //
                 // Parse Issues
                 //
                 Issue::ExpectedExpression => "Expected Expression",
+                Issue::ExpectedTypeName => "Expected Type Name",
                 Issue::InvalidSyntax => "Invalid Syntax",
                 Issue::UnexpectedEoF => "Unexpected EOF (end of file)",
                 Issue::InvalidExprStmt => "Invalid Expression as a Statement",

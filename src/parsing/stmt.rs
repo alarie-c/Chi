@@ -6,6 +6,17 @@ pub struct Block {
     pub stmts: Vec<Handle<Stmt>>,
 }
 
+pub mod stmt_fragments {
+    use super::*;
+
+    #[derive(Debug)]
+    pub struct Binding {
+        pub symbol: Handle<Substring>,
+        pub init: Handle<Expr>,
+        pub mutable: bool,
+    }
+}
+
 // ------------------------------------------------------------------------------------------------------------------ //
 // MARK: Stmt Data
 // ------------------------------------------------------------------------------------------------------------------ //
@@ -13,11 +24,6 @@ pub struct Block {
 /// Used to model the node information for an statement, including it's variants and each variant's data.
 #[derive(Debug)]
 pub enum StmtData {
-    Binding {
-        symbol: Handle<Substring>,
-        init: Handle<Expr>,
-        mutable: bool,
-    },
     If {
         cond: Handle<Expr>,
         if_br: Block,
@@ -26,6 +32,7 @@ pub enum StmtData {
     Expr {
         expr: Handle<Expr>,
     },
+    Binding(stmt_fragments::Binding),
 }
 
 // ------------------------------------------------------------------------------------------------------------------ //
@@ -39,7 +46,7 @@ pub struct Stmt {
 }
 
 impl Stmt {
-    /// Creates a new expression with the given data.
+    /// Creates a new statement with the given data.
     pub fn new(span: Span, data: StmtData) -> Self {
         Self { span, data }
     }

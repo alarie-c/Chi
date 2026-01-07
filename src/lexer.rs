@@ -393,6 +393,7 @@ impl<'a> Lexer<'a> {
             //
             // Literals
             //
+            b'\'' => return self.lex_label(),
             b'"' => return self.lex_str(),
             b'0'..=b'9' => return Ok(self.lex_digit()),
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => return Ok(self.lex_symbol()),
@@ -518,6 +519,40 @@ impl<'a> Lexer<'a> {
 
         Ok(Token {
             kind: TokenKind::Str,
+            span,
+        })
+    }
+
+    /// Attempts to lex an entire label literal and will error if it is invalid or missing a delimiter.
+    fn lex_label(&mut self) -> Result<Token, Error> {
+        let (start, start_x, start_y) = (self.offset, self.x, self.y);
+
+        // Skip first `'`
+        self.eat(1);
+
+        // Eat while not `'`
+        while self.get(0) != b'\'' {
+            // Catch EOF
+            if self.get(0) == 0 {
+                return Err(Error::new(
+                    UnterminatedLabel,
+                    Span::new(self.file, start, 1, start_x, start_y),
+                    "This label is missing a closing `'`.".into(),
+                ));
+            }
+
+            self.eat(1);
+        }
+
+        // When this breaks, offset -> `'`
+        let len = self.offset - start + 1;
+        let span = Span::new(self.file, start, len, start_x, start_y);
+
+        // Advance for next iteration
+        self.eat(1);
+
+        Ok(Token {
+            kind: TokenKind::Label,
             span,
         })
     }

@@ -148,6 +148,7 @@ pub enum TokenKind {
     Int,
     Float,
     Str,
+    Label,
 
     //
     // Keywords

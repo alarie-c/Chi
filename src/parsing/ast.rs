@@ -3,6 +3,7 @@ use crate::{
     handle::Handle,
     interner::Interner,
     parsing::{
+        decl::{Decl, DeclData},
         expr::{Expr, ExprData},
         stmt::{Block, Stmt, StmtData},
     },
@@ -14,6 +15,7 @@ const INVALID_STR: &'static str = "<invalid substring handle>";
 // Alias
 type E = ExprData;
 type S = StmtData;
+type D = DeclData;
 
 /// Used when printing substrings to resolve a handle into a string safely.
 macro_rules! stringify_handle {
@@ -35,8 +37,10 @@ pub struct Ast {
     exprs: Vec<Expr>,
     /// A container for all statements.
     stmts: Vec<Stmt>,
-    // @(temp) root holds stmt handles
-    root: Vec<Handle<Stmt>>,
+    /// A container for all statements.
+    decls: Vec<Decl>,
+    // @(temp) root holds Decl handles
+    root: Vec<Handle<Decl>>,
 }
 
 impl Ast {
@@ -46,20 +50,21 @@ impl Ast {
             file,
             exprs: vec![],
             stmts: vec![],
+            decls: vec![],
             root: vec![],
         }
     }
 
     /// Pushes the given handle to the root container.
-    pub fn push_to_root(&mut self, handle: Handle<Stmt>) {
+    pub fn push_to_root(&mut self, handle: Handle<Decl>) {
         self.root.push(handle);
     }
 
     /// Prints the AST the `stderr`.
     pub fn pretty_print(&self, int: &Interner) {
         // @temp printing just expressions
-        for stmt in &self.root {
-            self.print_stmt(0, int, *stmt);
+        for decl in &self.root {
+            self.print_decl(0, int, *decl);
         }
     }
 }
@@ -102,6 +107,25 @@ impl Ast {
     }
 }
 
+impl Ast {
+    /// Pushes an declaration to the container and returns a handle to that declaration.
+    pub fn push_decl(&mut self, decl: Decl) -> Handle<Decl> {
+        self.decls.push(decl);
+        Handle::<Decl>::new(self.decls.len() - 1)
+    }
+
+    /// Gets the expression from a given handle. This assumes that the handle is valid and will fatally error
+    /// if not, since `Handle<Decl>`s are only ever supposed to be created from `push_decl()`.
+    pub fn get_decl(&self, handle: Handle<Decl>) -> &Decl {
+        assert!(
+            handle.index() < self.decls.len(),
+            "decl handle `{}` out of bounds!",
+            handle.index()
+        );
+        &self.decls[handle]
+    }
+}
+
 // ------------------------------------------------------------------------------------------------------------------ //
 // MARK: Pretty Printing
 // ------------------------------------------------------------------------------------------------------------------ //
@@ -110,12 +134,47 @@ impl Ast {
     fn print_block(&self, i: usize, int: &Interner, block: &Block) {
         let spaces = " ".repeat(i);
         eprintln!("{spaces} BLOCK (");
-        
+
         for stmt in &block.stmts {
             self.print_stmt(i + 2, int, *stmt);
         }
 
         eprintln!("{spaces})");
+    }
+
+    fn print_decl(&self, i: usize, int: &Interner, decl: Handle<Decl>) {
+        let spaces = " ".repeat(i);
+        let decl = self.get_decl(decl);
+        eprint!("{spaces}");
+
+        match &decl.data {
+            D::FnDecl { sig } => {
+                eprintln!("FUNCTION DECL '{}'", stringify_handle!(int, sig.name));
+                eprintln!("{spaces}PARAMS");
+                for p in &sig.params {
+                    eprintln!(
+                        "{spaces}  '{}' {} {} WITH TYPE",
+                        stringify_handle!(int, p.ext_name),
+                        stringify_handle!(int, p.int_name),
+                        if p.mutable { "MUTABLE" } else { "CONSTANT" }
+                    );
+                    self.print_expr(i + 4, int, p.type_name);
+                    if let Some(def) = p.default {
+                        eprintln!("{spaces}  AND DEFAULT");
+                        self.print_expr(i + 4, int, def);
+                    }
+                }
+                eprintln!("{spaces}END PARAMS");
+                eprintln!("{spaces}RETURN TYPE");
+                if let Some(rt) = sig.return_type {
+                    self.print_expr(i + 4, int, rt);
+                } else {
+                    eprintln!("{spaces}  NONE");
+                }
+            }
+
+            _ => unreachable!("unknown declaration in ast pretty printer!"),
+        }
     }
 
     fn print_stmt(&self, i: usize, int: &Interner, stmt: Handle<Stmt>) {
@@ -124,18 +183,14 @@ impl Ast {
         eprint!("{spaces}");
 
         match &stmt.data {
-            S::Binding {
-                symbol,
-                init,
-                mutable,
-            } => {
-                let _str = if *mutable {
+            S::Binding(binding) => {
+                let _str = if binding.mutable {
                     "MUTABLE BINDING"
                 } else {
                     "BINDING"
                 };
-                eprintln!("{_str} '{}'", stringify_handle!(int, *symbol));
-                self.print_expr(i + 2, int, *init);
+                eprintln!("{_str} '{}'", stringify_handle!(int, binding.symbol));
+                self.print_expr(i + 2, int, binding.init);
             }
             S::Expr { expr } => {
                 eprintln!("EXPRESSION STATEMENT");
@@ -209,7 +264,7 @@ impl Ast {
                 self.print_expr(i + 2, int, *assignee);
                 eprintln!("{spaces}END ASSIGN");
             }
-            
+
             _ => unreachable!("unknown expression data in pretty printer!"),
         }
     }

@@ -2,12 +2,13 @@ use crate::{
     error::{Error, ErrorIssue},
     file::File,
     handle::Handle,
-    interner::Interner,
+    interner::{Interner, Substring},
     operator::Op,
     parsing::{
         ast::Ast,
+        decl::{Decl, DeclData, decl_fragments},
         expr::{Expr, ExprData},
-        stmt::{Stmt, StmtData},
+        stmt::{Stmt, StmtData, stmt_fragments},
     },
     token::{Token, TokenKind},
 };
@@ -16,6 +17,7 @@ use crate::{
 type Issue = ErrorIssue;
 type E = ExprData;
 type S = StmtData;
+type D = DeclData;
 type Tk = TokenKind;
 
 macro_rules! stringify_span {
@@ -24,6 +26,17 @@ macro_rules! stringify_span {
         String::from_utf8(bytes.iter().map(|b| *b).collect())
             .expect("invalid byte sequence for this token!")
     }};
+}
+
+macro_rules! skip_to {
+    ($self:expr, $( $tk:pat ),+ $(,)?) => {
+        while !matches!(
+            ($self).get(0).kind,
+            Tk::Eof | $( $tk )|+
+        ) {
+            ($self).eat(1);
+        }
+    };
 }
 
 // ------------------------------------------------------------------------------------------------------------------ //
@@ -53,10 +66,10 @@ pub fn parse<'a>(
     };
 
     while !parser.is_at_eof() {
-        match parser.parse_stmt() {
+        match parser.parse_decl() {
             Ok(handle) => {
                 parser.ast.push_to_root(handle);
-                let expr = parser.ast.get_stmt(handle);
+                let expr = parser.ast.get_decl(handle);
                 eprintln!("{:#?}", expr);
             }
             Err(err) => {
@@ -209,6 +222,22 @@ impl<'a> Parser<'a> {
                 stringify_span!(self, self.get(0).span)
             ),
         ))
+    }
+
+    fn expect_terminator(&mut self, skip: bool) -> Result<(), Error> {
+        match self.expect_many(
+            "`;` or new line to end statement",
+            [Tk::Semicolon, Tk::Eof, Tk::Eol],
+            true,
+        ) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                if skip {
+                    skip_to!(self, Tk::Semicolon, Tk::Eol);
+                }
+                return Err(error);
+            }
+        }
     }
 }
 
@@ -434,7 +463,10 @@ impl<'a> Parser<'a> {
 
         // Parse the current expression first
         let operand = self.parse_prefix_unary()?; // @mark NEXT CALL
-        eprintln!("(postfix unary) after stack back: `{:#?}`", self.get(0).kind);
+        eprintln!(
+            "(postfix unary) after stack back: `{:#?}`",
+            self.get(0).kind
+        );
 
         // Then look for a postfix unary operator
         match self.get(0).kind {
@@ -571,14 +603,13 @@ impl<'a> Parser<'a> {
 
         // Compute span and return the statement
         let span = self.get_back(1).span.merge(&start_span);
-        Ok(Stmt::new(
-            span,
-            StmtData::Binding {
-                symbol,
-                init,
-                mutable,
-            },
-        ))
+        let binding = stmt_fragments::Binding {
+            symbol,
+            init,
+            mutable,
+        };
+
+        Ok(Stmt::new(span, S::Binding(binding)))
     }
 
     pub fn parse_stmt(&mut self) -> Result<Handle<Stmt>, Error> {
@@ -618,17 +649,7 @@ impl<'a> Parser<'a> {
         let stmt = match res {
             Ok(stmt) => stmt,
             Err(error) => {
-                // Skip until next statement
-                while self.get(0).kind != Tk::Semicolon
-                    || self.get(0).kind != Tk::Eof
-                    || self.get(0).kind != Tk::Eol
-                {
-                    if self.get(0).kind == Tk::Eof {
-                        break;
-                    }
-                    self.eat(1);
-                }
-
+                skip_to!(self, Tk::Semicolon, Tk::Eol);
                 return Err(error);
             }
         };
@@ -647,17 +668,7 @@ impl<'a> Parser<'a> {
             // Missing semicolon/newline case:
             _ => {
                 let offender_span = self.get(0).span;
-
-                // Skip until next statement
-                while self.get(0).kind != Tk::Semicolon
-                    || self.get(0).kind != Tk::Eof
-                    || self.get(0).kind != Tk::Eol
-                {
-                    if self.get(0).kind == Tk::Eof {
-                        break;
-                    }
-                    self.eat(1);
-                }
+                skip_to!(self, Tk::Semicolon, Tk::Eol);
 
                 return Err(Error::new(
                     Issue::InvalidSyntax,
@@ -668,6 +679,308 @@ impl<'a> Parser<'a> {
                     ),
                 ));
             }
+        }
+    }
+}
+
+// ------------------------------------------------------------------------------------------------------------------ //
+// MARK: Declaration Parsers
+// ------------------------------------------------------------------------------------------------------------------ //
+
+impl<'a> Parser<'a> {
+    fn parse_type_name(&mut self) -> Result<Handle<Expr>, Error> {
+        if self.get(0).kind != Tk::Symbol {
+            Err(Error::new(
+                Issue::ExpectedTypeName,
+                self.get(0).span,
+                format!(
+                    "Expected a type name, got `{}` instead.",
+                    stringify_span!(self, self.get(0).span)
+                ),
+            ))
+        } else {
+            let substring_handle = self
+                .interner
+                .intern(&self.source[self.get(0).span.as_range()]);
+            Ok(self.ast.push_expr(Expr::new(
+                self.get(0).span,
+                E::Symbol {
+                    name: substring_handle,
+                },
+            )))
+        }
+    }
+
+    /// cursor -> LPAR
+    /// cursor -> one after RPAR
+    fn parse_parameters(&mut self) -> Vec<decl_fragments::Parameter> {
+        let (start_span, _) = (self.get(0).span, self.get(0).kind);
+
+        // The no parameter case
+        if self.get(1).kind == Tk::RPar {
+            self.eat(2);
+            return vec![];
+        }
+
+        let mut params: Vec<decl_fragments::Parameter> = vec![];
+
+        loop {
+            // Move to the beginning of the first parameter
+            self.eat(1);
+
+            // Look for mutable
+            let mutable = if self.get(0).kind == Tk::Mutable {
+                self.eat(1);
+                true
+            } else {
+                false
+            };
+
+            // Look for a label for exterior name
+            let ext_name_maybe: Option<Handle<Substring>> = if self.get(0).kind == Tk::Label {
+                // Take the span and go to the actual name
+                let span = self.get(0).span;
+                self.eat(1);
+
+                // Compute start/end without the `'`
+                let start = span.offset + 1;
+                let end = span.end() - 1;
+
+                // Get a handle to that substring
+                Some(self.interner.intern(&self.source[start..end]))
+            } else {
+                // Otherwise set it to nothing (for now)
+                None
+            };
+
+            // Make sure there exists some interior name token
+            let int_name: Handle<Substring> = match self.expect("parameter name", Tk::Symbol, true)
+            {
+                Ok(()) => self
+                    .interner
+                    .intern(&self.source[self.get(0).span.as_range()]),
+
+                // If there isn't, either skip to the next param (or end of params)
+                Err(error) => {
+                    self.errors.push(error);
+                    skip_to!(self, Tk::RPar, Tk::Comma);
+
+                    // Break on the RPAR (end params)
+                    if self.get(0).kind == Tk::RPar {
+                        break;
+
+                    // Or try for another parameter
+                    } else {
+                        continue;
+                    }
+                }
+            };
+
+            // Now check for a colon and handle the error
+            match self.expect(
+                "`:` after parameter name to annotate its type",
+                Tk::Colon,
+                true,
+            ) {
+                Ok(()) => {}
+                Err(error) => {
+                    self.errors.push(error);
+                    skip_to!(self, Tk::RPar, Tk::Comma);
+
+                    // Break on the RPAR (end params)
+                    if self.get(0).kind == Tk::RPar {
+                        break;
+
+                    // Or try for another parameter
+                    } else {
+                        continue;
+                    }
+                }
+            }
+
+            // Look for a type name and handle the error
+            let type_name = match self.parse_type_name() {
+                Ok(type_expr) => type_expr,
+                Err(error) => {
+                    self.errors.push(error);
+                    skip_to!(self, Tk::RPar, Tk::Comma);
+
+                    // Break on the RPAR (end params)
+                    if self.get(0).kind == Tk::RPar {
+                        break;
+
+                    // Or try for another parameter
+                    } else {
+                        continue;
+                    }
+                }
+            };
+            // cursor -> after type name expr
+
+            // Look for a equals in case of default
+            let default: Option<Handle<Expr>> = if self.get(0).kind == Tk::Eq {
+                // First consume that Eq
+                self.eat(1);
+
+                // Then try to parse an expression
+                match self.parse_expr() {
+                    // Get the default expression
+                    Ok(expr_handle) => Some(expr_handle),
+
+                    // Handle an error in the default expression
+                    Err(error) => {
+                        self.errors.push(error);
+                        skip_to!(self, Tk::RPar, Tk::Comma);
+
+                        // Break on the RPAR (end params)
+                        if self.get(0).kind == Tk::RPar {
+                            break;
+
+                        // Or try for another parameter
+                        } else {
+                            continue;
+                        }
+                    }
+                }
+            } else {
+                None
+            };
+            // cursor -> after Eq (probably comma or Rpar)
+
+            // Get the exterior name or use the interior one as a fallback
+            let ext_name = ext_name_maybe.unwrap_or(int_name);
+
+            // Create the parameter
+            let param = decl_fragments::Parameter {
+                ext_name,
+                int_name,
+                type_name,
+                mutable,
+                default,
+            };
+
+            // Push the parameter
+            params.push(param);
+
+            // Expect a comma to come after or close with an RPar
+            match self.get(0).kind {
+                Tk::RPar => break,
+                Tk::Comma => {
+                    // Make sure the comma is followed by an argument.
+                    if self.get(1).kind == Tk::RPar {
+                        self.errors.push(Error::new(
+                            Issue::InvalidSyntax,
+                            self.get(0).span,
+                            "Expected another parameter after the comma, got `)` instead.".into(),
+                        ));
+
+                        // Advance to the RPAR and then return.
+                        self.eat(1);
+                        break;
+
+                    // Otherwise, just continue. This is the ONLY case that is a valid continuation of the loop!
+                    } else {
+                        continue;
+                    }
+                }
+                Tk::Eof => {
+                    self.errors.push(Error::new(
+                        Issue::UnexpectedEoF,
+                        start_span,
+                        "This function call is missing a closing `)`.".into(),
+                    ));
+                    break;
+                }
+                _ => {
+                    self.errors.push(Error::new(
+                        Issue::InvalidSyntax,
+                        self.get(0).span,
+                        "Expected either `)` to end the function declaration or `,` to continue listing arguments.".into(),
+                    ));
+
+                    // Advance until the RPAR is found
+                    let (_, eof) = self.eat_until(Tk::RPar);
+
+                    // Handle the EOF case
+                    if eof {
+                        self.errors.push(Error::new(
+                            Issue::UnexpectedEoF,
+                            start_span,
+                            "This function call is missing a closing `)`.".into(),
+                        ));
+                    }
+
+                    break;
+                }
+            }
+        }
+
+        self.eat(1);
+        params
+    }
+
+    /// cursor -> `FUNCTION`
+    fn parse_fn(&mut self) -> Result<Handle<Decl>, Error> {
+        let (start_span, _) = (self.get(0).span, self.get(0).kind);
+
+        // The next thing should be a name for the function, which in the future could be an expression (like a path),
+        // but for now we can just bullshit it
+        self.expect("function name", Tk::Symbol, true)?;
+
+        // Extract the name from here
+        let name = self
+            .interner
+            .intern(&self.source[self.get(0).span.as_range()]);
+
+        // Then look for a LPAR
+        self.expect("`(` to begin function parameters", Tk::LPar, true)?;
+
+        // Then get the parameters
+        let params = self.parse_parameters();
+
+        // Then look for a return type, if it exists
+        let return_type: Option<Handle<Expr>> = if self.get(0).kind == Tk::Arrow {
+            // First consume that arrow
+            self.eat(1);
+
+            // Then try to parse an expression
+            match self.parse_expr() {
+                // Get the default expression
+                Ok(expr_handle) => Some(expr_handle),
+
+                // Handle an error and use `None` as the return type
+                Err(error) => {
+                    self.errors.push(error);
+                    skip_to!(self, Tk::Eol, Tk::LCurl);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Then look to see if this is just a declaration or a definition
+        if self.get(0).kind != Tk::LCurl {
+            let span = self.get(0).span.merge(&start_span);
+            let def = D::FnDecl {
+                sig: decl_fragments::FnSig {
+                    name,
+                    params,
+                    return_type,
+                }
+            };
+            return Ok(self.ast.push_decl(Decl::new(span, def)))
+        }
+
+        unreachable!("def not supported yet chief")
+    }
+
+    pub fn parse_decl(&mut self) -> Result<Handle<Decl>, Error> {
+        let (_, kind) = (self.get(0).span, self.get(0).kind);
+
+        match kind {
+            Tk::Function => self.parse_fn(),
+            _ => unreachable!("i dunno what that is..."),
         }
     }
 }
