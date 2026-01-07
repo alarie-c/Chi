@@ -5,4 +5,5 @@ A programming language made for scientific computing, simulation, statistical mo
 
 ## Todo
 
-- [ ] Rewrite AST to use more composable/modular parts
+- [x] Rewrite AST to use more composable/modular parts
+- [ ] Rewrite AST pretty printer to not be so ugly

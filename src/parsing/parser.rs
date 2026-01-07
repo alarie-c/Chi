@@ -268,10 +268,10 @@ impl<'a> Parser<'a> {
             let substring_handle = self
                 .interner
                 .intern(&self.source[self.get(0).span.as_range()]);
-            
+
             // Consume the symbol
             self.eat(1);
-            
+
             // Return the expression handle
             Ok(self.ast.push_expr(Expr::new(
                 self.get_back(1).span,
@@ -281,7 +281,7 @@ impl<'a> Parser<'a> {
     }
 
     // cursor -> first token of param
-    fn parse_parameter(&mut self) -> Result<decl::Parameter, Error> {    
+    fn parse_parameter(&mut self) -> Result<decl::Parameter, Error> {
         //
         // Mutability
         //
@@ -293,9 +293,9 @@ impl<'a> Parser<'a> {
         };
 
         //
-        // Labeled exterior name
+        // Label
         //
-        let ext_name_maybe: Option<Handle<Substring>> = if self.get(0).kind == Tk::Label {
+        let label: Option<Handle<Substring>> = if self.get(0).kind == Tk::Label {
             // Take the span and go to the actual name
             let span = self.get(0).span;
             self.eat(1);
@@ -312,10 +312,10 @@ impl<'a> Parser<'a> {
         };
 
         //
-        // Interior name
+        // Actual name
         //
         self.expect("parameter name", Tk::Symbol, false)?;
-        let int_name = self
+        let name = self
             .interner
             .intern(&self.source[self.get(0).span.as_range()]);
 
@@ -352,13 +352,10 @@ impl<'a> Parser<'a> {
         // After getting the default value,
         // cursor -> after eq (probably comma or rpar)
 
-        // Get the exterior name or use the interior one as a fallback
-        let ext_name = ext_name_maybe.unwrap_or(int_name);
-
         // Return the parameter
         Ok(decl::Parameter {
-            ext_name,
-            int_name,
+            label,
+            name,
             type_name,
             mutable,
             default,
@@ -946,14 +943,18 @@ impl<'a> Parser<'a> {
         )?;
 
         // Then look to see if this is just a declaration or a definition
-        
+
         //
         // Function declaration
         //
         if self.get_back(1).kind != Tk::LCurl {
             let span = self.get_back(1).span.merge(&start_span);
             let parameters: decl::Parameters = params.into();
-            let signature = decl::FnSignature { name, parameters, return_type };
+            let signature = decl::FnSignature {
+                name,
+                parameters,
+                return_type,
+            };
             let def = decl::Data::FnDecl { signature };
             return Ok(self.ast.push_decl(Decl::new(span, def)));
         }

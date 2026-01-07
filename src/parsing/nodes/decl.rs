@@ -6,8 +6,8 @@ use crate::{handle::Handle, interner::Substring, parsing::nodes::{expr::Expr, st
 
 #[derive(Debug)]
 pub struct Parameter {
-    pub ext_name: Handle<Substring>,
-    pub int_name: Handle<Substring>,
+    pub label: Option<Handle<Substring>>,
+    pub name: Handle<Substring>,
     pub type_name: Handle<Expr>,
     pub mutable: bool,
     pub default: Option<Handle<Expr>>,

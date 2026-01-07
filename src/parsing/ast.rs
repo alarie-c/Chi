@@ -148,17 +148,33 @@ impl Ast {
         match &decl.data {
             decl::Data::FnDecl { signature } => {
                 eprintln!("FUNCTION DECL '{}'", stringify_handle!(int, signature.name));
-                
+
                 // Print parameters
                 eprintln!("{spaces}PARAMS");
                 signature.parameters.iter().for_each(|p| {
-                    eprintln!(
-                        "{spaces}  '{}' {} {} WITH TYPE",
-                        stringify_handle!(int, p.ext_name),
-                        stringify_handle!(int, p.int_name),
-                        if p.mutable { "MUTABLE" } else { "CONSTANT" }
-                    );
+                    let mutability = if p.mutable { "MUTABLE" } else { "CONSTANT" };
+
+                    // Print the exterior name if it has one
+                    match p.label {
+                        Some(handle) => {
+                            eprintln!(
+                                "{spaces}  '{}' {} {mutability} WITH TYPE",
+                                stringify_handle!(int, handle),
+                                stringify_handle!(int, p.name)
+                            );
+                        }
+                        None => {
+                            eprintln!(
+                                "{spaces}  {} {mutability} WITH TYPE",
+                                stringify_handle!(int, p.name)
+                            );
+                        }
+                    }
+
+                    // Print the type
                     self.print_expr(i + 4, int, p.type_name);
+
+                    // Then print if it has a default
                     if let Some(def) = p.default {
                         eprintln!("{spaces}  AND DEFAULT");
                         self.print_expr(i + 4, int, def);
@@ -210,8 +226,7 @@ impl Ast {
                 }
 
                 eprintln!("{spaces}END IF");
-            }
-            //_ => unreachable!("unknown statement in ast pretty printer!"),
+            } //_ => unreachable!("unknown statement in ast pretty printer!"),
         }
     }
 
