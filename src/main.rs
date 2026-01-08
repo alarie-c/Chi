@@ -1,4 +1,4 @@
-use crate::{file::File, handle::Handle, lexer::lex, parsing::parser::parse, token::TokenKind};
+use crate::{file::File, handle::Handle, lexer::lex, parsing::{parser::parse, printer::pretty_print_ast}, token::TokenKind};
 use std::fs;
 
 pub mod error;
@@ -30,9 +30,7 @@ fn main() {
         eprintln!("{:#?}", err);
     }
 
-    let (ast, _parse_errors, _interner) = parse(Handle::<File>::null(), &text.as_bytes(), &tokens);
-    println!("AST: {:#?}", ast);
-    ast.pretty_print(&_interner);
+    let (mut ast, _parse_errors, _interner) = parse(Handle::<File>::null(), &text.as_bytes(), &tokens);
+    pretty_print_ast(&mut ast, &_interner, std::io::stdout());
     println!("parse_errors: {:#?}", _parse_errors);
-    // println!("interner: {:#?}", _interner);
 }

@@ -1,3 +1,6 @@
+// ------------------------------------------------------------------------------------------------------------------ //
+// Declarations are the highest level AST structure for any compilation unit.
+
 use crate::{handle::Handle, interner::Substring, parsing::expr::{self, Expr}, token::Span};
 
 // ------------------------------------------------------------------------------------------------------------------ //
