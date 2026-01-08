@@ -23,6 +23,8 @@ function add(x: int, y: int) -> int {
 }
 
 function split(str: string, 'by' delimiter: char = "\n") -> List<string> {
+  let str_copy = str;
+  
   function s(str: string, d: char) -> ('item' string, 'rem' Maybe<string>) {
     if let Some i = str.find(d) {
       (item: str[0..i], result: Some str[i..]) 
@@ -32,8 +34,9 @@ function split(str: string, 'by' delimiter: char = "\n") -> List<string> {
   }
 
   let mutable res: List<string> = [];
-  while let item, Som rem = s(str, delimiter) {
+  while let item, Some rem = s(str_copy, delimiter) {
     res.append(item);
+    str_copy = rem
   }
 
   res

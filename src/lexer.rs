@@ -4,7 +4,9 @@ use crate::{
     handle::Handle,
     token::{Span, Token, TokenKind, match_keyword},
 };
-use ErrorIssue::*;
+
+// Alias
+type Issue = ErrorIssue;
 
 // ------------------------------------------------------------------------------------------------------------------ //
 // MARK: Lex API
@@ -126,10 +128,8 @@ impl<'a> Lexer<'a> {
             b'\n' => {
                 self.x = 0; // this will be fixed on the call to eat()
                 self.y += 1;
-                token = Token {
-                    kind: Tk::Eol,
-                    span: span(1),
-                };
+                self.eat(1);
+                return self.next_token();
             }
 
             //
@@ -404,7 +404,7 @@ impl<'a> Lexer<'a> {
 
                 // Error about the invalid character
                 return Err(Error::new(
-                    UnrecognizedChar,
+                    Issue::UnrecognizedChar,
                     span(1),
                     "This character is not recognized by the compiler.".into(),
                 ));
@@ -500,7 +500,7 @@ impl<'a> Lexer<'a> {
             // Catch EOF
             if self.get(0) == 0 {
                 return Err(Error::new(
-                    UnterminatedString,
+                    Issue::UnterminatedString,
                     Span::new(self.file, start, 1, start_x, start_y),
                     "This string literal is missing a closing `\"`.".into(),
                 ));
@@ -535,7 +535,7 @@ impl<'a> Lexer<'a> {
             // Catch EOF
             if self.get(0) == 0 {
                 return Err(Error::new(
-                    UnterminatedLabel,
+                    Issue::UnterminatedLabel,
                     Span::new(self.file, start, 1, start_x, start_y),
                     "This label is missing a closing `'`.".into(),
                 ));

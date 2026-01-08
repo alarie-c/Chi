@@ -83,8 +83,6 @@ impl Span {
 pub enum TokenKind {
     /// Represents the end of the token stream.
     Eof = 0,
-    /// Represents the end of a line.
-    Eol,
 
     //
     // Grouping Operators
