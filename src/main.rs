@@ -1,4 +1,4 @@
-use crate::{file::File, handle::Handle, lexer::lex, parsing::{parser::parse, printer::pretty_print_ast}, token::TokenKind};
+use crate::{file::File, handle::Handle, lexer::lex, parsing::{old::parse, printer::pretty_print_ast}, token::TokenKind};
 use std::fs;
 
 pub mod error;
