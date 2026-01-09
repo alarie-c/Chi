@@ -1,10 +1,9 @@
 use crate::{
     file::File,
     handle::Handle,
-    interner::Interner,
     parsing::{
-        decl::{self, Decl},
-        expr::{self, Expr},
+        decl::{Decl},
+        expr::{Expr},
     },
 };
 
@@ -19,9 +18,9 @@ pub struct Ast {
     file: Handle<File>,
     /// A container for all expressions.
     exprs: Vec<Expr>,
-    /// A container for all statements.
+    /// A container for all declarations.
     decls: Vec<Decl>,
-
+    /// The root declarations of the compilation unit.
     root: Vec<Handle<Decl>>,
 }
 

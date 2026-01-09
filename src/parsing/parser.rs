@@ -116,7 +116,12 @@ struct Parser<'a> {
 impl<'a> Parser<'a> {
     /// Attempts to parse one expression.
     pub fn parse_expr(&mut self) -> Result<Handle<Expr>, Error> {
-        self.parse_assign()
+        let (_, kind) = (self.get(0).span, self.get(0).kind);
+
+        match kind {
+            Tk::Let => self.parse_binding(),
+            _ => self.parse_assign(),
+        }
     }
 
     /// Returns whether or not only token remaining is the EOF.
@@ -223,29 +228,76 @@ impl<'a> Parser<'a> {
             ),
         ))
     }
-
-    fn expect_terminator(&mut self, skip: bool) -> Result<(), Error> {
-        match self.expect_many(
-            "`;` or new line to end statement",
-            [Tk::Semicolon, Tk::Eof],
-            true,
-        ) {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                if skip {
-                    skip_to!(self, Tk::Semicolon);
-                }
-                return Err(error);
-            }
-        }
-    }
 }
 
 // ------------------------------------------------------------------------------------------------------------------ //
-// MARK: Components Parsers
+// MARK: Component Parsers
 // ------------------------------------------------------------------------------------------------------------------ //
 
 impl<'a> Parser<'a> {
+    // cursor -> LCURL
+    // cursor -> one after RCURL
+    fn parse_block(&mut self) -> Result<expr::Block, Error> {
+        let (start_span, _) = (self.get(0).span, self.get(0).kind);
+
+        let mut exprs: Vec<Handle<Expr>> = vec![];
+        self.eat(1);
+
+        while self.get(0).kind != Tk::RCurl {
+            let expr_start_span = self.get(0).span;
+            
+            // Check for an EOF
+            if self.get(0).kind == Tk::Eof {
+                return Err(Error::new(
+                    Issue::MissingDelimiter,
+                    start_span,
+                    "This block is missing a closing `}`.".into(),
+                ));
+            }
+
+            // Parse some expression
+            let expr = match self.parse_expr() {
+                Ok(handle) => handle,
+                Err(error) => {
+                    self.errors.push(error);
+
+                    // Recover
+                    skip_to!(self, Tk::Semicolon, Tk::RCurl);
+                    if self.get(0).kind == Tk::Semicolon {
+                        self.eat(1);
+                    }
+
+                    continue;
+                }
+            };
+
+            // Look for a semicolon or RCURL
+            self.expect_many(
+                "Expected either `;` to end this expression or `}` to end the block",
+                [Tk::Semicolon, Tk::RCurl],
+                false,
+            )?;
+
+            // Continue (semicolon)
+            // Break    (rcurl)
+            if self.get(0).kind == Tk::Semicolon {
+                // Create the discard expression
+                let span = self.get(0).span.merge(&expr_start_span);
+                let discard = Expr::new(span, expr::Data::Discard(expr));
+                exprs.push(self.ast.push_expr(discard));
+                
+                self.eat(1);
+                continue;
+            } else {
+                exprs.push(expr);
+                break;
+            }
+        }
+
+        self.eat(1);
+        Ok(exprs.into())
+    }
+
     fn parse_type_name(&mut self) -> Result<Handle<Expr>, Error> {
         // @temp this just looks for a symbol, but in the future it could be an entire expression i.e. path
 
@@ -751,6 +803,46 @@ impl<'a> Parser<'a> {
         // Do not advance (call to `parse.expr()` did it for us)
         Ok(self.ast.push_expr(expr))
     }
+
+    fn parse_binding(&mut self) -> Result<Handle<Expr>, Error> {
+        let (start_span, _) = (self.get(0).span, self.get(0).kind);
+
+        // Check if this is a mutable binding and consume the keyword if it is
+        let mutable = self.get(1).kind == Tk::Mutable;
+        if mutable {
+            self.eat(1);
+        }
+
+        // Skip to what should be an symbol token
+        self.eat(1);
+
+        // Make sure there is a symbol and error if not
+        self.expect("a variable name", Tk::Symbol, false)?;
+
+        // Get the handle of the symbol's substring
+        let symbol = self
+            .interner
+            .intern(&self.source[self.get(0).span.as_range()]);
+
+        // Eat the symbol and get to the equals sign
+        self.eat(1);
+
+        // Now expect an equals sign
+        self.expect("'=' after variable name", Tk::Eq, true)?;
+
+        // Now get an initializer expression
+        let init = self.parse_assign()?; // @mark NEXT CALL
+
+        // Compute span and return the statement
+        let span = self.get_back(1).span.merge(&start_span);
+        let binding = expr::Data::Binding {
+            symbol,
+            init,
+            mutable,
+        };
+
+        Ok(self.ast.push_expr(Expr::new(span, binding)))
+    }
 }
 
 // ------------------------------------------------------------------------------------------------------------------ //
@@ -816,30 +908,40 @@ impl<'a> Parser<'a> {
         self.expect_many(
             "either `{` to begin function body, or a new line to complete the function declaration.",
             [Tk::Eof, Tk::Semicolon, Tk::LCurl],
-            true
+            false
         )?;
+
+        // Construct the information
+        let span = self.get_back(1).span.merge(&start_span);
+        let parameters: decl::Parameters = params.into();
+        let signature = decl::FnSignature {
+            name,
+            parameters,
+            return_type,
+        };
 
         // Then look to see if this is just a declaration or a definition
 
         //
         // Function declaration
         //
-        if self.get_back(1).kind != Tk::LCurl {
-            let span = self.get_back(1).span.merge(&start_span);
-            let parameters: decl::Parameters = params.into();
-            let signature = decl::FnSignature {
-                name,
-                parameters,
-                return_type,
-            };
-            let def = decl::Data::FnDecl { signature };
-            return Ok(self.ast.push_decl(Decl::new(span, def)));
+        if self.get(0).kind != Tk::LCurl {
+            self.eat(1);
+            let decl = decl::Data::FnDecl { signature };
+            return Ok(self.ast.push_decl(Decl::new(span, decl)));
         }
 
         //
         // Function definition
         //
-        unreachable!("def not supported yet chief")
+        let body = self.parse_block()?;
+
+        // by now,
+        // cursor -> one after RCURL
+
+        // We can safely return the function as a definition
+        let def = decl::Data::FnDef { signature, body };
+        return Ok(self.ast.push_decl(Decl::new(span, def)));
     }
 
     pub fn parse_decl(&mut self) -> Result<Handle<Decl>, Error> {
@@ -847,7 +949,10 @@ impl<'a> Parser<'a> {
 
         match kind {
             Tk::Function => self.parse_fn(),
-            _ => unreachable!("i dunno what that is..."),
+            _ => {
+                eprintln!("thing: {:#?}", self.get(0));
+                unreachable!("i dunno what that is...");
+            }
         }
     }
 }

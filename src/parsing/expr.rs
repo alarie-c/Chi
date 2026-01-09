@@ -65,7 +65,7 @@ pub struct UnaryOper {
 #[derive(Debug)]
 pub enum Data { 
     //
-    // Atom
+    // Atoms
     //
     Int(i64),
     Float(f64),
@@ -74,21 +74,13 @@ pub enum Data {
     Symbol(Handle<Substring>),
 
     //
-    // Compound
-    //
-    Call {
-        callee: Handle<Expr>,
-        args: Arguments,
-    },
-
-    //
-    // Unary Operations
+    // Unary operations
     //
     Prefix(UnaryOper),
     Postfix(UnaryOper),
     
     //
-    // Binary Operators
+    // Binary operations
     //
     Arithmetic(BinaryOper),
     Logical(BinaryOper),
@@ -100,6 +92,29 @@ pub enum Data {
     //
     //
     Block(Block),
+    Discard(Handle<Expr>),
+
+    //
+    // Effectful expressions
+    //
+    Call {
+        callee: Handle<Expr>,
+        args: Arguments,
+    },
+    Binding {
+        symbol: Handle<Substring>,
+        init: Handle<Expr>,
+        mutable: bool,
+    },
+
+    //
+    // Control flow
+    //
+    If {
+        cond: Handle<Expr>,
+        if_block: Block,
+        el_block: Option<Block>,
+    }
 }
 
 // ------------------------------------------------------------------------------------------------------------------ //

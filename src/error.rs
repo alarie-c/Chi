@@ -86,6 +86,7 @@ pub enum ErrorIssue {
     InvalidSyntax,
     UnexpectedEoF,
     InvalidExprStmt,
+    MissingDelimiter,
 
     //
     // Internal Issues
@@ -113,6 +114,7 @@ impl std::fmt::Display for ErrorIssue {
                 Issue::InvalidSyntax => "Invalid Syntax",
                 Issue::UnexpectedEoF => "Unexpected EOF (end of file)",
                 Issue::InvalidExprStmt => "Invalid Expression as a Statement",
+                Issue::MissingDelimiter => "Missing Delimiter",
 
                 //
                 // Internal Issues
