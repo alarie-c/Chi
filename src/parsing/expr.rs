@@ -3,6 +3,17 @@ use crate::{
 };
 
 // ------------------------------------------------------------------------------------------------------------------ //
+// MARK: Sub-componenets
+// ------------------------------------------------------------------------------------------------------------------ //
+
+#[derive(Debug)]
+pub struct Argument {
+    pub label: Option<Handle<Substring>>,
+    pub value: Handle<Expr>,
+    pub span: Span,
+}
+
+// ------------------------------------------------------------------------------------------------------------------ //
 // MARK: Componenets
 // ------------------------------------------------------------------------------------------------------------------ //
 
@@ -13,32 +24,12 @@ impl Block {
     pub fn count(&self) -> usize {
         self.0.len()
     }
-
     pub fn iter(&self) -> std::slice::Iter<'_, Handle<Expr>> {
         self.0.iter()
     }
 }
 
 impl From<Vec<Handle<Expr>>> for Block {
-    fn from(value: Vec<Handle<Expr>>) -> Self {
-        Self(value)
-    }
-}
-
-#[derive(Debug)]
-pub struct Arguments(Vec<Handle<Expr>>);
-
-impl Arguments {
-    pub fn arity(&self) -> usize {
-        self.0.len()
-    }
-
-    pub fn iter(&self) -> std::slice::Iter<'_, Handle<Expr>> {
-        self.0.iter()
-    }
-}
-
-impl From<Vec<Handle<Expr>>> for Arguments {
     fn from(value: Vec<Handle<Expr>>) -> Self {
         Self(value)
     }
@@ -55,6 +46,25 @@ pub struct BinaryOper {
 pub struct UnaryOper {
     pub operand: Handle<Expr>,
     pub op: Op,
+}
+
+#[derive(Debug)]
+pub struct Arguments(Vec<Argument>);
+
+impl Arguments {
+    pub fn arity(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<'_, Argument> {
+        self.0.iter()
+    }
+}
+
+impl From<Vec<Argument>> for Arguments {
+    fn from(value: Vec<Argument>) -> Self {
+        Self(value)
+    }
 }
 
 // ------------------------------------------------------------------------------------------------------------------ //

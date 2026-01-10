@@ -92,6 +92,7 @@ impl<'a, W: std::io::Write> AstPrinter<'a, W> {
     }
 
     fn print_expr(&mut self, handle: Handle<Expr>) -> std::io::Result<()> {
+        let spaces = " ".repeat((self.indent * Self::INDENT_SPACE_CT) as usize);
         let expr = self.ast.get_expr(handle);
 
         match &expr.data {
@@ -162,14 +163,22 @@ impl<'a, W: std::io::Write> AstPrinter<'a, W> {
             expr::Data::Call { callee, args } => {
                 write!(self.writer, "Call(")?;
                 self.print_expr(*callee)?;
+                write!(self.writer, ")\n")?;
 
                 // Print arguments
                 for a in args.iter() {
-                    write!(self.writer, ", ")?;
-                    self.print_expr(*a)?;
-                }
+                    write!(self.writer, "{spaces}  Arg(")?;
+                    
+                    // Print the label
+                    if let Some(label) = a.label {
+                        write!(self.writer, "'{}', ", deref_handle!(self.interner, label))?;
+                    }
 
-                write!(self.writer, ")")?;
+                    // Then print the value
+                    self.print_expr(*&a.value)?;
+
+                    write!(self.writer, ")\n")?;
+                }
             }
 
             //
